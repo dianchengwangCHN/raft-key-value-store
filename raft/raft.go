@@ -42,6 +42,11 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type LogEntry struct {
+	Command			interface{}
+	currentTerm	int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -54,7 +59,13 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	currentTerm int								// latest term server has seen
+	votedFor		int								// candidateId
+	log					[]LogEntry					// log entries
+	commitIndex	int								// index of highest log entry known to be committed
+	lastApplied	int								// index of highest log entry applied to state machine
+	nextIndex		[]int							// index of the next log entry
+	matchIndex	[]int							// index of the highest log entry known to be replicated on each server
 }
 
 // return currentTerm and whether this server

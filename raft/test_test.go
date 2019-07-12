@@ -672,7 +672,7 @@ func TestFigure82C(t *testing.T) {
 
 		if leader != -1 {
 			cfg.crash1(leader)
-			nup -= 1
+			nup--
 		}
 
 		if nup < 3 {
@@ -680,7 +680,7 @@ func TestFigure82C(t *testing.T) {
 			if cfg.rafts[s] == nil {
 				cfg.start1(s)
 				cfg.connect(s)
-				nup += 1
+				nup++
 			}
 		}
 	}
@@ -758,14 +758,14 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
 			cfg.disconnect(leader)
-			nup -= 1
+			nup--
 		}
 
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.connected[s] == false {
 				cfg.connect(s)
-				nup += 1
+				nup++
 			}
 		}
 	}
