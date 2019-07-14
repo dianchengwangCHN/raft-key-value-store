@@ -44,7 +44,8 @@ type ApplyMsg struct {
 
 type LogEntry struct {
 	Command			interface{}
-	currentTerm	int
+	EntryTerm		int
+	EntryTerm		int
 }
 
 //
@@ -61,21 +62,18 @@ type Raft struct {
 	// state a Raft server must maintain.
 	currentTerm int								// latest term server has seen
 	votedFor		int								// candidateId
-	log					[]LogEntry					// log entries
+	log					[]LogEntry				// log entries
 	commitIndex	int								// index of highest log entry known to be committed
 	lastApplied	int								// index of highest log entry applied to state machine
 	nextIndex		[]int							// index of the next log entry
 	matchIndex	[]int							// index of the highest log entry known to be replicated on each server
 }
 
-// return currentTerm and whether this server
+// GetState returns currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
 	// Your code here (2A).
-	return term, isleader
+	return rf.currentTerm, rf.votedFor == rf.me
 }
 
 
@@ -127,6 +125,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	term					int
+	candidateID		int
+	lastLogIndex	int
+	lastLogTerm		int
 }
 
 //
