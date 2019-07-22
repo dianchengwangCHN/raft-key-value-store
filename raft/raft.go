@@ -17,16 +17,18 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "github.com/dianchengwangCHN/raft-key-value-store/labrpc"
+import (
+	"sync"
 
-// import "bytes"
-// import "labgob"
+	"github.com/dianchengwangCHN/raft-key-value-store/labrpc"
+	// "math/rand"
+	// "bytes"
+	// "labgob"
+)
 
 type ServerState int
 
 const (
-	NULL      ServerState = -1
 	LEADER    ServerState = 0
 	CANDIDATE ServerState = 1
 	FOLLOWER  ServerState = 2
@@ -73,8 +75,12 @@ type Raft struct {
 	log         []LogEntry  // log entries
 	commitIndex int         // index of highest log entry known to be committed
 	lastApplied int         // index of highest log entry applied to state machine
-	nextIndex   []int       // index of the next log entry
-	matchIndex  []int       // index of the highest log entry known to be replicated on each server
+
+	voteRecv int // the number of votes that have been received
+
+	//state the Leader need to maintain
+	nextIndex  []int // index of the next log entry
+	matchIndex []int // index of the highest log entry known to be replicated on each server
 
 	applyCh chan ApplyMsg // channel to send ApplyMsg
 }
@@ -130,10 +136,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	term         int
-	candidateID  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -142,8 +148,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -151,20 +157,14 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	args.term = rf.currentTerm
+	rf.mu.Lock()
+	defer rf.mu.Lock()
+	reply.Term = rf.currentTerm
 	voteGranted := false
-	if args.term < rf.currentTerm {
-		voteGranted = false
-	} else {
-		if rf.votedFor == -1 {
-			voteGranted = true
-		} else if args.lastLogTerm < rf.currentTerm || args.lastLogIndex < rf.lastApplied {
-			voteGranted = false
-		} else {
-			voteGranted = true
-		}
+	if args.Term >= rf.currentTerm && (rf.votedFor == -1 || args.LastLogTerm >= rf.currentTerm && args.LastLogIndex >= rf.lastApplied) {
+		voteGranted = true
 	}
-	reply.voteGranted = voteGranted
+	reply.VoteGranted = voteGranted
 }
 
 //
@@ -198,6 +198,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	if ok {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.state != CANDIDATE || rf.currentTerm > reply.Term {
+			return ok
+		}
+
+	}
 	return ok
 }
 
@@ -216,9 +224,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	var index int = -1
+	var term int = -1
+	var isLeader bool = true
 
 	// Your code here (2B).
 
@@ -254,11 +262,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.state = FOLLOWER
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 0)
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.nextIndex = make([]int, 0)
+	rf.matchIndex = make([]int, 0)
 
 	rf.applyCh = applyCh
 
