@@ -18,10 +18,11 @@ package raft
 //
 
 import (
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/dianchengwangCHN/raft-key-value-store/labrpc"
-	// "math/rand"
 	// "bytes"
 	// "labgob"
 )
@@ -76,13 +77,15 @@ type Raft struct {
 	commitIndex int         // index of highest log entry known to be committed
 	lastApplied int         // index of highest log entry applied to state machine
 
-	voteRecv int // the number of votes that have been received
+	seed     rand.Source // the source used to generate random timeout duration
+	voteRecv int         // the number of votes that have been received
 
 	//state the Leader need to maintain
 	nextIndex  []int // index of the next log entry
 	matchIndex []int // index of the highest log entry known to be replicated on each server
 
-	applyCh chan ApplyMsg // channel to send ApplyMsg
+	applyCh     chan ApplyMsg // channel to send ApplyMsg
+	heartbeatCh chan bool     // channel to receive timeout signal
 }
 
 // GetState returns currentTerm and whether this server
@@ -272,9 +275,50 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, 0)
 
 	rf.applyCh = applyCh
+	rf.heartbeatCh = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// goroutine to maintain the state machine
+	go func() {
+		for {
+			switch rf.state {
+			case FOLLOWER:
+				rf.seed = rand.NewSource(int64(rf.me))
+				for rf.state == FOLLOWER {
+					select {
+					case <-time.After(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond):
+						rf.state = CANDIDATE
+						break
+					case success := <-rf.heartbeatCh:
+						if success {
+
+						}
+
+					}
+				}
+				break
+			case LEADER:
+				break
+			case CANDIDATE:
+				for rf.state == CANDIDATE {
+					rf.mu.Lock()
+					rf.currentTerm++
+					rf.votedFor = rf.me
+					rf.mu.Unlock()
+					for i, _ := range rf.peers {
+						go rf.sendRequestVote(i, &RequestVoteArgs{}, &RequestVoteReply{})
+					}
+					select {
+					case <-time.After(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond):
+						break
+					}
+				}
+				break
+			}
+		}
+	}()
 
 	return rf
 }
