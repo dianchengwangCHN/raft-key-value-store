@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -86,6 +87,7 @@ type Raft struct {
 
 	applyCh     chan ApplyMsg // channel to send ApplyMsg
 	heartbeatCh chan bool     // channel to receive timeout signal
+	electionCh  chan bool     // channel to receive signal claim to be the leader
 }
 
 // GetState returns currentTerm and whether this server
@@ -155,17 +157,17 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-//
-// example RequestVote RPC handler.
-//
+// RequestVote is the RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	voteGranted := false
 	rf.mu.Lock()
 	defer rf.mu.Lock()
 	reply.Term = rf.currentTerm
-	voteGranted := false
 	if args.Term >= rf.currentTerm && (rf.votedFor == -1 || args.LastLogTerm >= rf.currentTerm && args.LastLogIndex >= rf.lastApplied) {
 		voteGranted = true
+		rf.state = FOLLOWER
+		fmt.Printf("server %d voted to %d\n", rf.me, args.CandidateID)
 	}
 	reply.VoteGranted = voteGranted
 }
@@ -201,15 +203,49 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	fmt.Printf("server %d got the response from %d\n", rf.me, server)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 		if rf.state != CANDIDATE || rf.currentTerm > reply.Term {
 			return ok
 		}
-
+		if reply.VoteGranted {
+			rf.voteRecv++
+			if rf.voteRecv > len(rf.peers)/2 {
+				rf.state = LEADER
+				rf.electionCh <- true
+				fmt.Printf("server %d claimed to be the leader\n", rf.me)
+			}
+		}
 	}
 	return ok
+}
+
+// AppendEntriesArgs is the data model of the AppendEntries RPC arguments
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
+}
+
+// AppendEntriesReply is the data model of the AppendEntries RPC reply
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+// AppendEntries is the AppendEntries RPC handler.
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	success := false
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+
+	reply.Success = success
 }
 
 //
@@ -269,6 +305,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.log = make([]LogEntry, 0)
+	rf.log = append(rf.log, LogEntry{
+		EntryIndex: 0,
+		EntryTerm:  0,
+	})
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, 0)
@@ -276,6 +316,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyCh = applyCh
 	rf.heartbeatCh = make(chan bool)
+	rf.electionCh = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -288,14 +329,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.seed = rand.NewSource(int64(rf.me))
 				for rf.state == FOLLOWER {
 					select {
-					case <-time.After(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond):
+					case <-time.After(time.Duration(300+rand.New(rf.seed).Intn(300)) * time.Millisecond):
 						rf.state = CANDIDATE
+						fmt.Printf("server %d becomes a CANDIDATE\n", rf.me)
 						break
-					case success := <-rf.heartbeatCh:
-						if success {
-
-						}
-
 					}
 				}
 				break
@@ -306,12 +343,32 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.mu.Lock()
 					rf.currentTerm++
 					rf.votedFor = rf.me
+					term := rf.currentTerm
+					lastLogEntry := rf.log[len(rf.log)-1]
+					rf.voteRecv = 0
 					rf.mu.Unlock()
-					for i, _ := range rf.peers {
-						go rf.sendRequestVote(i, &RequestVoteArgs{}, &RequestVoteReply{})
+
+					// start leader election
+					args := &RequestVoteArgs{
+						Term:         term,
+						CandidateID:  rf.me,
+						LastLogTerm:  lastLogEntry.EntryTerm,
+						LastLogIndex: lastLogEntry.EntryIndex,
 					}
+					go func(args *RequestVoteArgs) {
+						for i := range rf.peers {
+							if rf.state == CANDIDATE && i != rf.me {
+								reply := &RequestVoteReply{}
+								go rf.sendRequestVote(i, args, reply)
+								fmt.Printf("server %d sent RequestVote to %d\n", rf.me, i)
+							}
+						}
+					}(args)
+
 					select {
-					case <-time.After(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond):
+					case <-time.After(time.Duration(300+rand.New(rf.seed).Intn(300)) * time.Millisecond):
+						break
+					case <-rf.electionCh:
 						break
 					}
 				}
