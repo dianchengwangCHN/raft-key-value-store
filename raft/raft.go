@@ -219,7 +219,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		}
 		if reply.VoteGranted {
 			rf.voteRecv++
-			fmt.Printf("server %d now has %d votes\n", rf.me, rf.voteRecv)
 			if rf.voteRecv > len(rf.peers)/2 {
 				rf.state = LEADER
 				rf.stateUpdateCh <- true
@@ -266,13 +265,39 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	fmt.Printf("server %d receive the reply from %d, %t\n", rf.me, server, ok)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
 	}
 	return ok
+}
+
+func (rf *Raft) broadcastHeartbeat() {
+	rf.mu.Lock()
+	term := rf.currentTerm
+	leaderID := rf.me
+	lastLogIndex := len(rf.log) - 1
+	leaderCommit := rf.commitIndex
+	rf.mu.Unlock()
+
+	args := &AppendEntriesArgs{
+		Term:         term,
+		LeaderID:     leaderID,
+		PrevLogIndex: lastLogIndex,
+		PrevLogTerm:  rf.log[lastLogIndex].EntryTerm,
+		Entries:      make([]LogEntry, 0),
+		LeaderCommit: leaderCommit,
+	}
+
+	for i := range rf.peers {
+		if rf.state == LEADER && i != rf.me {
+			go func(args *AppendEntriesArgs, i int) {
+				reply := &AppendEntriesReply{}
+				rf.sendAppendEntries(i, args, reply)
+			}(args, i)
+		}
+	}
 }
 
 //
@@ -361,7 +386,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for {
 			switch rf.state {
 			case FOLLOWER:
-				rf.timer.Reset(time.Duration(700+rand.New(rf.seed).Intn(300)) * time.Millisecond)
+				rf.timer.Reset(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond)
 				select {
 				case <-rf.timer.C:
 					rf.state = CANDIDATE
@@ -376,33 +401,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				}
 				break
 			case LEADER:
-				for rf.state == LEADER {
-					rf.mu.Lock()
-					term := rf.currentTerm
-					leaderID := rf.me
-					lastLogIndex := len(rf.log) - 1
-					leaderCommit := rf.commitIndex
-					rf.mu.Unlock()
-
-					args := &AppendEntriesArgs{
-						Term:         term,
-						LeaderID:     leaderID,
-						PrevLogIndex: lastLogIndex,
-						PrevLogTerm:  rf.log[lastLogIndex].EntryTerm,
-						Entries:      make([]LogEntry, 0),
-						LeaderCommit: leaderCommit,
-					}
-
-					for i := range rf.peers {
-						if rf.state == LEADER && i != rf.me {
-							go func(args *AppendEntriesArgs, i int) {
-								reply := &AppendEntriesReply{}
-								rf.sendAppendEntries(i, args, reply)
-							}(args, i)
-						}
-					}
-					time.Sleep(time.Duration(HEARTBEATInterval) * time.Millisecond)
-				}
+				go rf.broadcastHeartbeat()
+				time.Sleep(time.Duration(HEARTBEATInterval) * time.Millisecond)
 				break
 			case CANDIDATE:
 				for rf.state == CANDIDATE {
@@ -430,7 +430,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							}(args, i)
 						}
 					}
-					rf.timer.Reset(time.Duration(700+rand.New(rf.seed).Intn(300)) * time.Millisecond)
+					rf.timer.Reset(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond)
 					select {
 					case <-rf.timer.C:
 						break
