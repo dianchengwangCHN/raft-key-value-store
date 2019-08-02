@@ -166,22 +166,33 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		return
 	}
-	if rf.votedFor == -1 || rf.votedFor == rf.me {
+
+	/*
+	 * If RPC request or response contains term T > currentTerm: set currentTerm = T,
+	 * convert to FOLLOWER
+	 */
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.stateUpdateCh <- FOLLOWER
+	}
+
+	/*
+	 * If (votedFor is null or candidateId) and candidate's log is at least
+	 * as up-to-date as receiver's log, grant vote
+	 */
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
 		if args.Term > rf.currentTerm || args.LastLogIndex >= len(rf.log)-1 {
 			rf.votedFor = args.CandidateID
 			reply.VoteGranted = true
 			fmt.Printf("server %d votes to %d, term%d\n", rf.me, args.CandidateID, rf.currentTerm)
 		}
-	}
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.voteRecv = 0
-		rf.stateUpdateCh <- FOLLOWER
 	}
 	reply.Term = rf.currentTerm
 }
@@ -216,11 +227,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Printf("server %d sent RequestVote to %d\n", rf.me, server)
+	fmt.Printf("server %d sent RequestVote to %d, term%d\n", rf.me, server, rf.currentTerm)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+
+		/*
+		 * If RPC request or response contains term T > currentTerm: set currentTerm = T,
+		 * convert to FOLLOWER
+		 */
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			rf.stateUpdateCh <- FOLLOWER
@@ -267,7 +283,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm || args.PrevLogIndex >= len(rf.log) || args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
 		reply.Success = false
 	} else {
+		fmt.Printf("server %d receives AppendEntries form %d, term%d\n", rf.me, args.LeaderID, rf.currentTerm)
 		reply.Success = true
+		rf.state = FOLLOWER
 		rf.stateUpdateCh <- FOLLOWER
 
 		// update term if needed
@@ -286,6 +304,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log = append(rf.log[:i], args.Entries[j:]...)
 		}
 
+		// update commitIndex
 		if args.LeaderCommit > rf.commitIndex {
 			lastNewLogIndex := args.PrevLogIndex + len(args.Entries)
 			if args.LeaderCommit < lastNewLogIndex {
@@ -298,16 +317,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	fmt.Printf("server %d sends AppendEntries to %d, term%d, %v\n", rf.me, server, rf.currentTerm, rf.state)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+
+		/*
+		 * If RPC request or response contains term T > currentTerm: set currentTerm = T,
+		 * convert to FOLLOWER
+		 */
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			rf.stateUpdateCh <- FOLLOWER
-		}
-	} else if len(args.Entries) > 0 {
-		for !rf.sendAppendEntries(server, args, reply) {
 		}
 	}
 	return ok
@@ -427,7 +449,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.applyCh = applyCh
-	rf.stateUpdateCh = make(chan ServerState)
+	rf.stateUpdateCh = make(chan ServerState, 5)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
