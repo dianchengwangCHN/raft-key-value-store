@@ -28,6 +28,7 @@ import (
 	// "labgob"
 )
 
+// ServerState defines the 3 server states
 type ServerState int
 
 const (
@@ -169,10 +170,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		return
 	}
-	if args.Term > rf.currentTerm || args.LastLogIndex >= len(rf.log)-1 {
+	if rf.votedFor == -1 || rf.votedFor == rf.me {
+		if args.Term > rf.currentTerm || args.LastLogIndex >= len(rf.log)-1 {
+			rf.votedFor = args.CandidateID
+			reply.VoteGranted = true
+			fmt.Printf("server %d votes to %d, term%d\n", rf.me, args.CandidateID, rf.currentTerm)
+		}
+	}
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.voteRecv = 0
 		rf.stateUpdateCh <- FOLLOWER
-		reply.VoteGranted = true
 	}
 	reply.Term = rf.currentTerm
 }
@@ -255,15 +264,37 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm || args.PrevLogIndex >= len(rf.log) || args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
 		reply.Success = false
 	} else {
+		reply.Success = true
+		rf.stateUpdateCh <- FOLLOWER
+
+		// update term if needed
 		if args.Term > rf.currentTerm {
 			rf.currentTerm = args.Term
-			reply.Term = rf.currentTerm
+		}
+
+		// update entries
+		if len(args.Entries) > 0 {
+			i, j := args.PrevLogIndex+1, 0
+			for ; i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
+				if rf.log[i].EntryTerm != args.Entries[j].EntryTerm {
+					break
+				}
+			}
+			rf.log = append(rf.log[:i], args.Entries[j:]...)
+		}
+
+		if args.LeaderCommit > rf.commitIndex {
+			lastNewLogIndex := args.PrevLogIndex + len(args.Entries)
+			if args.LeaderCommit < lastNewLogIndex {
+				rf.commitIndex = args.LeaderCommit
+			}
+			rf.commitIndex = lastNewLogIndex
 		}
 	}
+	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -271,30 +302,46 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-
+		if reply.Term > rf.currentTerm {
+			rf.currentTerm = reply.Term
+			rf.stateUpdateCh <- FOLLOWER
+		}
+	} else if len(args.Entries) > 0 {
+		for !rf.sendAppendEntries(server, args, reply) {
+		}
 	}
 	return ok
 }
 
+// send AppendEntries RPC to all other servers
 func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
-	rf.mu.Lock()
-	term := rf.currentTerm
-	lastLogIndex := len(rf.log) - 1
-	leaderCommit := rf.commitIndex
-	rf.mu.Unlock()
-
-	args := &AppendEntriesArgs{
-		Term:         term,
-		LeaderID:     rf.me,
-		PrevLogIndex: lastLogIndex,
-		PrevLogTerm:  rf.log[lastLogIndex].EntryTerm,
-		Entries:      make([]LogEntry, 0),
-		LeaderCommit: leaderCommit,
-	}
-
 	for i := range rf.peers {
-		if rf.state == LEADER && i != rf.me {
+		if rf.state != LEADER {
+			return
+		}
+		if i != rf.me {
 			go func(i int) {
+				rf.mu.Lock()
+				term := rf.currentTerm
+				prevLogIndex := rf.nextIndex[i] - 1
+				leaderCommit := rf.commitIndex
+				rf.mu.Unlock()
+
+				args := &AppendEntriesArgs{
+					Term:         term,
+					LeaderID:     rf.me,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  rf.log[prevLogIndex].EntryTerm,
+					LeaderCommit: leaderCommit,
+				}
+				if isHeartbeat {
+					args.Entries = make([]LogEntry, 0)
+				} else {
+					rf.mu.Lock()
+					args.Entries = make([]LogEntry, len(rf.log)-prevLogIndex-1)
+					copy(args.Entries, rf.log[prevLogIndex+1:])
+					rf.mu.Unlock()
+				}
 				reply := &AppendEntriesReply{}
 				rf.sendAppendEntries(i, args, reply)
 			}(i)
@@ -339,9 +386,7 @@ func (rf *Raft) Kill() {
 }
 
 func (rf *Raft) updateState(state ServerState) {
-	rf.mu.Lock()
 	rf.state = state
-	rf.mu.Unlock()
 }
 
 //
@@ -382,7 +427,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.applyCh = applyCh
-	rf.stateUpdateCh = make(chan ServerState, 10)
+	rf.stateUpdateCh = make(chan ServerState)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -392,10 +437,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for {
 			switch rf.state {
 			case FOLLOWER:
-				rf.timer.Reset(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond)
+				rf.timer.Reset(time.Duration(375+rand.New(rf.seed).Intn(625)) * time.Millisecond)
 				select {
 				case <-rf.timer.C:
-					rf.state = CANDIDATE
+					rf.updateState(CANDIDATE)
 					fmt.Printf("server %d becomes a CANDIDATE\n", rf.me)
 					break
 				case state := <-rf.stateUpdateCh:
@@ -433,7 +478,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						}(args, i)
 					}
 				}
-				rf.timer.Reset(time.Duration(500+rand.New(rf.seed).Intn(500)) * time.Millisecond)
+				rf.timer.Reset(time.Duration(375+rand.New(rf.seed).Intn(625)) * time.Millisecond)
 				select {
 				case <-rf.timer.C:
 					break
@@ -442,8 +487,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.timer.Stop()
 					break
 				}
+				break
 			}
-			break
 		}
 	}()
 
