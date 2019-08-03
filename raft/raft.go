@@ -287,7 +287,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm || args.PrevLogIndex >= len(rf.log) || args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
 		reply.Success = false
 	} else {
-		fmt.Printf("server %d receives AppendEntries form %d, term%d\n", rf.me, args.LeaderID, rf.currentTerm)
+		// fmt.Printf("server %d receives AppendEntries form %d, term%d\n", rf.me, args.LeaderID, rf.currentTerm)
 		reply.Success = true
 		rf.state = FOLLOWER // to make sure the state change instantly
 		rf.stateUpdateCh <- FOLLOWER
@@ -306,6 +306,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				}
 			}
 			rf.log = append(rf.log[:i], args.Entries[j:]...)
+			fmt.Printf("server %d appends log to index%d\n", rf.me, len(rf.log)-1)
 		}
 
 		// update commitIndex
@@ -316,13 +317,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.commitIndex = lastNewLogIndex
 			rf.commitUpdateCh <- struct{}{}
+			fmt.Printf("server %d commits Entries %d\n", rf.me, rf.commitIndex)
 		}
 	}
 	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	fmt.Printf("server %d sends AppendEntries to %d, term%d, %v\n", rf.me, server, rf.currentTerm, rf.state)
+	// fmt.Printf("server %d sends AppendEntries to %d, term%d, %v\n", rf.me, server, rf.currentTerm, rf.state)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		rf.mu.Lock()
@@ -342,6 +344,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			if reply.Success {
 				rf.nextIndex[server] += len(args.Entries)
 				rf.matchIndex[server] = rf.nextIndex[server] - 1
+
+				// update commitIndex
 				if rf.matchIndex[server] > rf.commitIndex {
 					N := rf.matchIndex[server]
 					count := 0
@@ -351,6 +355,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 							if count > len(rf.matchIndex)/2 && rf.log[N].EntryTerm == rf.currentTerm {
 								rf.commitIndex = N
 								rf.commitUpdateCh <- struct{}{}
+								fmt.Printf("leader %d commits Entries %d\n", rf.me, rf.commitIndex)
 								break
 							}
 						}
@@ -358,9 +363,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 				}
 			} else {
 				rf.nextIndex[server]--
-
+				ok = false
 			}
 		}
+	} else {
+
 	}
 	return ok
 }
@@ -372,33 +379,38 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 			return
 		}
 		if i != rf.me {
-			if !isHeartbeat && len(rf.log) > nextIndex {
+			if !isHeartbeat && len(rf.log) <= nextIndex {
 				continue
 			}
 			go func(i int) {
-				rf.mu.Lock()
-				term := rf.currentTerm
-				prevLogIndex := rf.nextIndex[i] - 1
-				leaderCommit := rf.commitIndex
-				rf.mu.Unlock()
-
-				args := &AppendEntriesArgs{
-					Term:         term,
-					LeaderID:     rf.me,
-					PrevLogIndex: prevLogIndex,
-					PrevLogTerm:  rf.log[prevLogIndex].EntryTerm,
-					LeaderCommit: leaderCommit,
-				}
-				if isHeartbeat {
-					args.Entries = make([]LogEntry, 0)
-				} else {
+				for {
 					rf.mu.Lock()
-					args.Entries = make([]LogEntry, len(rf.log)-prevLogIndex-1)
-					copy(args.Entries, rf.log[prevLogIndex+1:])
+					term := rf.currentTerm
+					prevLogIndex := rf.nextIndex[i] - 1
+					leaderCommit := rf.commitIndex
 					rf.mu.Unlock()
+
+					args := &AppendEntriesArgs{
+						Term:         term,
+						LeaderID:     rf.me,
+						PrevLogIndex: prevLogIndex,
+						PrevLogTerm:  rf.log[prevLogIndex].EntryTerm,
+						LeaderCommit: leaderCommit,
+					}
+					if isHeartbeat {
+						args.Entries = make([]LogEntry, 0)
+					} else {
+						rf.mu.Lock()
+						args.Entries = make([]LogEntry, len(rf.log)-prevLogIndex-1)
+						copy(args.Entries, rf.log[prevLogIndex+1:])
+						rf.mu.Unlock()
+					}
+					reply := &AppendEntriesReply{}
+					ok := rf.sendAppendEntries(i, args, reply)
+					if ok || isHeartbeat {
+						break
+					}
 				}
-				reply := &AppendEntriesReply{}
-				rf.sendAppendEntries(i, args, reply)
 			}(i)
 		}
 	}
@@ -423,7 +435,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	term := rf.currentTerm
 	isLeader := rf.state == LEADER
 
@@ -433,9 +444,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			EntryTerm: rf.currentTerm,
 		})
 		index = len(rf.log) - 1
+		fmt.Printf("server %d appends commandIndex %d\n", rf.me, index)
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
+		rf.mu.Unlock()
 		go rf.broadcastAppendEntries(false)
+	} else {
+		rf.mu.Unlock()
 	}
 	return index, term, isLeader
 }
@@ -493,6 +508,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.applyCh = applyCh
 	rf.stateUpdateCh = make(chan ServerState, 5)
+	rf.commitUpdateCh = make(chan struct{}, 5)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
