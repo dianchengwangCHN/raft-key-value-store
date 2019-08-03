@@ -89,8 +89,9 @@ type Raft struct {
 	nextIndex  []int // index of the next log entry
 	matchIndex []int // index of the highest log entry known to be replicated on each server
 
-	applyCh       chan ApplyMsg    // channel to send ApplyMsg
-	stateUpdateCh chan ServerState // channel to receive signal indicating server state has changed
+	applyCh        chan ApplyMsg    // channel to send ApplyMsg
+	stateUpdateCh  chan ServerState // channel to receive signal indicating server state has changed
+	commitUpdateCh chan struct{}    // channel to receive signal indicating commitIndex has changed
 }
 
 // GetState returns currentTerm and whether this server
@@ -227,7 +228,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Printf("server %d sent RequestVote to %d, term%d\n", rf.me, server, rf.currentTerm)
+	// fmt.Printf("server %d sent RequestVote to %d, term%d\n", rf.me, server, rf.currentTerm)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if ok {
 		rf.mu.Lock()
@@ -242,6 +243,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.stateUpdateCh <- FOLLOWER
 			return ok
 		}
+
 		if rf.state != CANDIDATE || rf.currentTerm > reply.Term {
 			return ok
 		}
@@ -249,6 +251,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.voteRecv++
 			if rf.voteRecv > len(rf.peers)/2 {
 				rf.stateUpdateCh <- LEADER
+
+				// reintialize nextIndex and matchIndex after election
 				for i := range rf.nextIndex {
 					rf.nextIndex[i] = len(rf.log)
 					rf.matchIndex[i] = 0
@@ -285,7 +289,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else {
 		fmt.Printf("server %d receives AppendEntries form %d, term%d\n", rf.me, args.LeaderID, rf.currentTerm)
 		reply.Success = true
-		rf.state = FOLLOWER
+		rf.state = FOLLOWER // to make sure the state change instantly
 		rf.stateUpdateCh <- FOLLOWER
 
 		// update term if needed
@@ -311,6 +315,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.commitIndex = args.LeaderCommit
 			}
 			rf.commitIndex = lastNewLogIndex
+			rf.commitUpdateCh <- struct{}{}
 		}
 	}
 	reply.Term = rf.currentTerm
@@ -330,6 +335,31 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			rf.stateUpdateCh <- FOLLOWER
+			return ok
+		}
+
+		if len(args.Entries) > 0 && args.PrevLogIndex == rf.nextIndex[server]-1 {
+			if reply.Success {
+				rf.nextIndex[server] += len(args.Entries)
+				rf.matchIndex[server] = rf.nextIndex[server] - 1
+				if rf.matchIndex[server] > rf.commitIndex {
+					N := rf.matchIndex[server]
+					count := 0
+					for _, index := range rf.matchIndex {
+						if index >= N {
+							count++
+							if count > len(rf.matchIndex)/2 && rf.log[N].EntryTerm == rf.currentTerm {
+								rf.commitIndex = N
+								rf.commitUpdateCh <- struct{}{}
+								break
+							}
+						}
+					}
+				}
+			} else {
+				rf.nextIndex[server]--
+
+			}
 		}
 	}
 	return ok
@@ -337,11 +367,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 // send AppendEntries RPC to all other servers
 func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
-	for i := range rf.peers {
+	for i, nextIndex := range rf.nextIndex {
 		if rf.state != LEADER {
 			return
 		}
 		if i != rf.me {
+			if !isHeartbeat && len(rf.log) > nextIndex {
+				continue
+			}
 			go func(i int) {
 				rf.mu.Lock()
 				term := rf.currentTerm
@@ -394,6 +427,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	isLeader := rf.state == LEADER
 
+	if isLeader {
+		rf.log = append(rf.log, LogEntry{
+			Command:   command,
+			EntryTerm: rf.currentTerm,
+		})
+		index = len(rf.log) - 1
+		rf.nextIndex[rf.me] = index + 1
+		rf.matchIndex[rf.me] = index
+		go rf.broadcastAppendEntries(false)
+	}
 	return index, term, isLeader
 }
 
@@ -459,16 +502,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for {
 			switch rf.state {
 			case FOLLOWER:
-				rf.timer.Reset(time.Duration(375+rand.New(rf.seed).Intn(625)) * time.Millisecond)
+				rf.timer.Reset(time.Duration(375+rand.New(rf.seed).Intn(375)) * time.Millisecond)
 				select {
 				case <-rf.timer.C:
 					rf.updateState(CANDIDATE)
-					fmt.Printf("server %d becomes a CANDIDATE\n", rf.me)
-					break
+					// fmt.Printf("server %d becomes a CANDIDATE\n", rf.me)
 				case state := <-rf.stateUpdateCh:
 					rf.updateState(state)
 					rf.timer.Stop()
-					break
 				}
 				break
 			case LEADER:
@@ -500,19 +541,34 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						}(args, i)
 					}
 				}
-				rf.timer.Reset(time.Duration(375+rand.New(rf.seed).Intn(625)) * time.Millisecond)
+				rf.timer.Reset(time.Duration(375+rand.New(rf.seed).Intn(375)) * time.Millisecond)
 				select {
 				case <-rf.timer.C:
-					break
 				case state := <-rf.stateUpdateCh:
 					rf.updateState(state)
 					rf.timer.Stop()
-					break
 				}
 				break
 			}
 		}
 	}()
 
+	go func() {
+		for {
+			select {
+			case <-rf.commitUpdateCh:
+				rf.mu.Lock()
+				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+					rf.applyCh <- ApplyMsg{
+						CommandValid: true,
+						Command:      rf.log[i].Command,
+						CommandIndex: i,
+					}
+					rf.lastApplied = i
+				}
+				rf.mu.Unlock()
+			}
+		}
+	}()
 	return rf
 }
