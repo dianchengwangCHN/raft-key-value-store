@@ -191,7 +191,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// If (votedFor is null or candidateId) and candidate's log is at least
 	// as up-to-date as receiver's log, grant vote
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
-		if args.Term > rf.currentTerm || args.LastLogIndex >= len(rf.log)-1 {
+		if args.LastLogTerm > rf.log[len(rf.log)-1].EntryTerm || args.LastLogIndex >= rf.log[len(rf.log)-1].EntryIndex {
 			rf.votedFor = args.CandidateID
 			reply.VoteGranted = true
 			if update {
@@ -345,7 +345,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitUpdateCh <- struct{}{}
 			fmt.Printf("server %d commits index %d, log length: %d, term%d\n", rf.me, rf.commitIndex, len(rf.log), rf.currentTerm)
 		}
-		fmt.Printf("server %d commitIndex: %d, leaderCommit: %d\n", rf.me, rf.commitIndex, args.LeaderCommit)
+		// fmt.Printf("server %d commitIndex: %d, leaderCommit: %d\n", rf.me, rf.commitIndex, args.LeaderCommit)
 	}
 	reply.Term = rf.currentTerm
 	// if len(args.Entries) > 0 {
