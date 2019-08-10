@@ -36,7 +36,7 @@ const (
 	CANDIDATE ServerState = 1
 	FOLLOWER  ServerState = 2
 
-	HEARTBEATInterval int = 125
+	HEARTBEATInterval int = 100
 	TIMEOUTInterval   int = 500
 	RANDOMInterval    int = 500
 )
@@ -169,9 +169,9 @@ type RequestVoteReply struct {
 // RequestVote is the RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	reply.VoteGranted = false
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	reply.VoteGranted = false
 
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
@@ -191,7 +191,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// If (votedFor is null or candidateId) and candidate's log is at least
 	// as up-to-date as receiver's log, grant vote
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
-		if args.LastLogTerm > rf.log[len(rf.log)-1].EntryTerm || args.LastLogIndex >= rf.log[len(rf.log)-1].EntryIndex {
+		if args.LastLogTerm > rf.log[len(rf.log)-1].EntryTerm || args.LastLogTerm == rf.log[len(rf.log)-1].EntryTerm && args.LastLogIndex >= rf.log[len(rf.log)-1].EntryIndex {
 			rf.votedFor = args.CandidateID
 			reply.VoteGranted = true
 			if update {
@@ -303,14 +303,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = FOLLOWER
 	}
 
+	if rf.state == LEADER {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		// fmt.Printf("server %d rejects Heartbeat from %d, term%d, args{index: %d, term: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
-	} else if args.PrevLogIndex >= len(rf.log) || args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
+	} else if args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex || args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
 		reply.Success = false
 		// fmt.Printf("server %d rejects Heartbeat from %d, term%d, args{index: %d, term: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
 	} else {
-		// fmt.Printf("server %d accepts AppendEntries form %d, term%d, args{index: %d, term: %d, commit: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+		// fmt.Printf("server %d, term%d accepts AppendEntries form %d, term%d, args{index: %d, term: %d, commit: %d}\n", rf.me, rf.currentTerm, args.LeaderID, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 		reply.Success = true
 		// valid request keeps server as follower
 		rf.votedFor = -1
@@ -318,21 +324,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.stateUpdateCh <- struct{}{}
 
 		// update entries
-		if len(args.Entries) > 0 {
-			i, j := args.PrevLogIndex+1, 0
-			for ; i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
-				if rf.log[i].EntryTerm != args.Entries[j].EntryTerm {
-					break
-				}
-			}
-
-			// delete entries that do not match and append new entries if any
-			if j < len(args.Entries) {
-				rf.log = append(rf.log[:i], args.Entries[j:]...)
-				fmt.Printf("server %d appends entries from index%d to index%d, term%d\n", rf.me, args.PrevLogIndex+1, len(rf.log)-1, rf.currentTerm)
-				// rf.persist()
+		i, j := args.PrevLogIndex+1, 0
+		for ; i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
+			if rf.log[i].EntryTerm != args.Entries[j].EntryTerm {
+				break
 			}
 		}
+
+		// delete entries that do not match and append new entries if any
+		rf.log = append(rf.log[:i], args.Entries[j:]...)
+		fmt.Printf("server %d appends entries from index%d to index%d, term%d\n", rf.me, args.PrevLogIndex+1, len(rf.log)-1, rf.currentTerm)
+		rf.persist()
 
 		// update commitIndex
 		if args.LeaderCommit > rf.commitIndex {
@@ -371,6 +373,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.votedFor = -1
 			rf.state = FOLLOWER
 			rf.stateUpdateCh <- struct{}{}
+			fmt.Printf("leader %d becomes follower\n", rf.me)
 			return ok
 		}
 
@@ -414,10 +417,13 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 		if rf.state != LEADER {
 			return
 		}
+		if i == rf.me {
+			continue
+		}
 		go func(i int) {
 			for {
 				rf.mu.Lock()
-				if i == rf.me || !isHeartbeat && len(rf.log) <= rf.nextIndex[i] {
+				if rf.state != LEADER || !isHeartbeat && len(rf.log) <= rf.nextIndex[i] {
 					rf.mu.Unlock()
 					break
 				}
@@ -442,7 +448,7 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 				reply := &AppendEntriesReply{}
 				ok := rf.sendAppendEntries(i, args, reply)
 				// fmt.Printf("leader %d sends AppendEntries to %d, term%d, commit%d %t\n", rf.me, i, rf.currentTerm, args.LeaderCommit, ok)
-				if ok || isHeartbeat || reply.Term > args.Term {
+				if ok || reply.Term > args.Term {
 					break
 				}
 			}
