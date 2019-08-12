@@ -36,8 +36,8 @@ const (
 	FOLLOWER  ServerState = 2
 
 	HEARTBEATInterval int = 100
-	TIMEOUTInterval   int = 800
-	RANDOMInterval    int = 800
+	TIMEOUTInterval   int = 1000
+	RANDOMInterval    int = 1000
 )
 
 //
@@ -291,8 +291,9 @@ type AppendEntriesArgs struct {
 
 // AppendEntriesReply is the data model of the AppendEntries RPC reply
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	ConflictIndex int
 }
 
 // AppendEntries is the AppendEntries RPC handler.
@@ -321,9 +322,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex ||
 		args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
 		reply.Success = false
+		if args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex {
+			reply.ConflictIndex = rf.log[len(rf.log)-1].EntryIndex + 1
+		} else {
+			index := args.PrevLogIndex - rf.log[0].EntryIndex - 1
+			for index > 1 && rf.log[index-1].EntryTerm == rf.log[index].EntryTerm {
+				index--
+			}
+			reply.ConflictIndex = rf.log[index].EntryIndex
+		}
 		// DPrintf("server %d rejects Heartbeat from %d, term%d, args{index: %d, term: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
 	} else {
-		// DPrintf("server %d, term%d accepts AppendEntries form %d, term%d, args{index: %d, term: %d, commit: %d}\n", rf.me, rf.currentTerm, args.LeaderID, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+		DPrintf("server %d, term%d accepts AppendEntries form %d, term%d, args{index: %d, term: %d, commit: %d}\n", rf.me, rf.currentTerm, args.LeaderID, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 		reply.Success = true
 		// valid request keeps server as follower
 		rf.votedFor = -1
@@ -356,7 +366,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			if rf.log[min].EntryTerm == rf.currentTerm {
 				rf.commitIndex = min
 				rf.commitUpdateCh <- struct{}{}
-				DPrintf("server %d commits index %d, log length: %d, term%d\n", rf.me, rf.commitIndex, len(rf.log), rf.currentTerm)
+				// DPrintf("server %d commits index %d, log length: %d, term%d\n", rf.me, rf.commitIndex, len(rf.log), rf.currentTerm)
 			}
 		}
 		// DPrintf("server %d commitIndex: %d, leaderCommit: %d\n", rf.me, rf.commitIndex, args.LeaderCommit)
@@ -414,12 +424,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 					}
 				}
 			} else {
-				if rf.nextIndex[server] == args.PrevLogIndex+1 && rf.nextIndex[server] > 1 {
-					index := rf.nextIndex[server] - rf.log[0].EntryIndex - 1
-					for index > 1 && rf.log[index].EntryTerm == args.PrevLogTerm {
-						index--
-					}
-					rf.nextIndex[server] = rf.log[index].EntryIndex + 1
+				if reply.ConflictIndex != -1 {
+					rf.nextIndex[server] = reply.ConflictIndex
 					ok = false
 				}
 			}
@@ -462,18 +468,48 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 					copy(args.Entries, rf.log[prevLogIndex+1:])
 				}
 				rf.mu.Unlock()
-				reply := &AppendEntriesReply{}
+				reply := &AppendEntriesReply{
+					ConflictIndex: -1,
+				}
 				ok := rf.sendAppendEntries(i, args, reply)
 				// DPrintf("leader %d sends AppendEntries to %d, term%d, commit%d %t\n", rf.me, i, rf.currentTerm, args.LeaderCommit, ok)
-				if ok || reply.Term > args.Term {
+				if ok || isHeartbeat {
 					break
 				}
+				time.Sleep(10 * time.Millisecond)
 			}
 			// if i != rf.me {
 			// 	DPrintf("leader %d sends AppendEntries to %d, term%d\n", rf.me, i, rf.currentTerm)
 			// }
 		}(i)
 	}
+}
+
+// InstallSnapshotArgs is the data model of the InstallSnapshot RPC arguments
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderID          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Offset            int
+	Data              []byte
+	Done              bool
+}
+
+// InstallSnapshotReply is the data model of the InstallSnapshot RPC reply
+type InstallSnapshotReply struct {
+	Term int
+}
+
+// InstallSnapshot is the InstallSnapshot RPC handler
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+
+	return ok
 }
 
 //
@@ -527,8 +563,8 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	// rf.timer.Stop()
-	// rf.state = FOLLOWER
+	rf.timer.Stop()
+	rf.state = FOLLOWER
 	// close(rf.stateUpdateCh)
 	// close(rf.commitUpdateCh)
 }
@@ -603,7 +639,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case CANDIDATE:
 				rf.mu.Lock()
 				rf.currentTerm++
-				DPrintf("server %d starts the election, term%d\n", rf.me, rf.currentTerm)
+				// DPrintf("server %d starts the election, term%d\n", rf.me, rf.currentTerm)
 				rf.votedFor = rf.me
 				rf.voteRecv = 1
 				term := rf.currentTerm
@@ -643,14 +679,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			select {
 			case <-rf.commitUpdateCh:
 				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-					rf.mu.Lock()
-					rf.lastApplied = i
 					applyCh <- ApplyMsg{
 						CommandValid: true,
 						Command:      rf.log[i].Command,
 						CommandIndex: i,
 					}
-					rf.mu.Unlock()
+					rf.lastApplied = i
 					DPrintf("server %d applies Entries %d\n", rf.me, i)
 				}
 			}
