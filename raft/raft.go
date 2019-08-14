@@ -485,32 +485,38 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 	}
 }
 
-// InstallSnapshotArgs is the data model of the InstallSnapshot RPC arguments
-type InstallSnapshotArgs struct {
-	Term              int
-	LeaderID          int
-	LastIncludedIndex int
-	LastIncludedTerm  int
-	Offset            int
-	Data              []byte
-	Done              bool
-}
+// // InstallSnapshotArgs is the data model of the InstallSnapshot RPC arguments
+// type InstallSnapshotArgs struct {
+// 	Term              int
+// 	LeaderID          int
+// 	LastIncludedIndex int
+// 	LastIncludedTerm  int
+// 	Offset            int
+// 	Data              []byte
+// 	Done              bool
+// }
 
-// InstallSnapshotReply is the data model of the InstallSnapshot RPC reply
-type InstallSnapshotReply struct {
-	Term int
-}
+// // InstallSnapshotReply is the data model of the InstallSnapshot RPC reply
+// type InstallSnapshotReply struct {
+// 	Term int
+// }
 
-// InstallSnapshot is the InstallSnapshot RPC handler
-func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+// // InstallSnapshot is the InstallSnapshot RPC handler
+// func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+// 	rf.mu.Lock()
+// 	defer rf.mu.Unlock()
 
-}
+// 	if args.Term < rf.currentTerm {
+// 		reply.Term = rf.currentTerm
+// 		return
+// 	}
+// }
 
-func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+// func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+// 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 
-	return ok
-}
+// 	return ok
+// }
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
