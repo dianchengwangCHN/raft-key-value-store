@@ -3,6 +3,7 @@ package raftkv
 import (
 	"log"
 	"sync"
+	"time"
 
 	"github.com/dianchengwangCHN/raft-key-value-store/labgob"
 	"github.com/dianchengwangCHN/raft-key-value-store/labrpc"
@@ -18,10 +19,21 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+// AGREEMENTTIMEOUTInterval is the timeout interval for reaching agreement to append a log entry
+const AGREEMENTTIMEOUTInterval time.Duration = 1000
+
+// OpType defines the type of each command that is logged
+type OpType string
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Type     OpType
+	Key      string
+	Value    string
+	ClientID int64
+	SerialID uint
 }
 
 type KVServer struct {
@@ -33,14 +45,54 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	kvMap             map[string]string     // map used to store key-value data
+	lastClerkSerialID map[int64]uint        // store the last received SerialID for each clerk (Since it's OK to assume that a client will make only one call into a Clerk at a time.)
+	entryAppliedChs   map[int]chan struct{} // store the channels used to notify operation success on each log index
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	_, isLeader := kv.rf.GetState()
+	succeed := false
+	if isLeader {
+		command := Op{
+			Type:     "Get",
+			Key:      args.Key,
+			ClientID: args.ClientID,
+			SerialID: args.SerialID,
+		}
+		index, term, isLeader := kv.rf.Start(command)
+		_, _, _ = index, term, isLeader
+		if _, ok := kv.entryAppliedChs[index]; !ok {
+			kv.entryAppliedChs[index] = make(chan struct{})
+		}
+		doneCh := kv.entryAppliedChs[index]
+		select {
+		case <-time.After(AGREEMENTTIMEOUTInterval * time.Millisecond):
+		case <-doneCh:
+
+		}
+	}
+
+	if succeed {
+		reply.WrongLeader = false
+
+	} else {
+		reply.WrongLeader = true
+		if ID := kv.rf.GetLeaderID(); ID != -1 {
+			reply.LeaderID = ID
+		}
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	_, isLeader := kv.rf.GetState()
+	if isLeader {
+
+	} else {
+
+	}
 }
 
 //

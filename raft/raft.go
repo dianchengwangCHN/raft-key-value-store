@@ -36,8 +36,8 @@ const (
 	FOLLOWER  ServerState = 2
 
 	HEARTBEATInterval int = 100
-	TIMEOUTInterval   int = 1000
-	RANDOMInterval    int = 1000
+	TIMEOUTInterval   int = 500
+	RANDOMInterval    int = 500
 )
 
 //
@@ -99,10 +99,14 @@ type Raft struct {
 // GetState returns currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.state == LEADER
+}
+
+// GetLeaderID returns the server ID that get the vote from the current server
+func (rf *Raft) GetLeaderID() int {
+	return rf.votedFor
 }
 
 //
@@ -128,7 +132,7 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
+
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentTerm int
@@ -150,7 +154,6 @@ func (rf *Raft) readPersist(data []byte) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
 	Term         int
 	CandidateID  int
 	LastLogIndex int
@@ -162,14 +165,12 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
 	Term        int
 	VoteGranted bool
 }
 
 // RequestVote is the RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.VoteGranted = false
@@ -535,7 +536,6 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	var index int
 
-	// Your code here (2B).
 	rf.mu.Lock()
 	term := rf.currentTerm
 	isLeader := rf.state == LEADER
@@ -566,13 +566,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-	// Your code here, if desired.
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	rf.timer.Stop()
 	rf.state = FOLLOWER
-	// close(rf.stateUpdateCh)
-	// close(rf.commitUpdateCh)
 }
 
 //
@@ -593,7 +588,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// Your initialization code here (2A, 2B, 2C).
 	rf.state = FOLLOWER
 	rf.currentTerm = 0
 	rf.votedFor = -1
@@ -620,75 +614,20 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// goroutine to maintain the server state
-	go func() {
-		for {
-			switch rf.state {
-			case FOLLOWER:
-				rf.timer.Reset(time.Duration(TIMEOUTInterval+rand.New(rf.seed).Intn(RANDOMInterval)) * time.Millisecond)
-				select {
-				case <-rf.timer.C:
-					rf.state = CANDIDATE
-				case <-rf.stateUpdateCh:
-					rf.timer.Stop()
-				}
-				break
-			case LEADER:
-				go rf.broadcastAppendEntries(true)
-				rf.timer.Reset(time.Duration(HEARTBEATInterval) * time.Millisecond)
-				select {
-				case <-rf.timer.C:
-				case <-rf.stateUpdateCh:
-					rf.timer.Stop()
-				}
-				break
-			case CANDIDATE:
-				rf.mu.Lock()
-				rf.currentTerm++
-				// DPrintf("server %d starts the election, term%d\n", rf.me, rf.currentTerm)
-				rf.votedFor = rf.me
-				rf.voteRecv = 1
-				term := rf.currentTerm
-				lastLogIndex := rf.log[len(rf.log)-1].EntryIndex
-				lastLogTerm := rf.log[len(rf.log)-1].EntryTerm
-				rf.mu.Unlock()
+	// start goroutine to maintain the server state
+	go rf.startStateMachine()
 
-				// start leader election
-				args := &RequestVoteArgs{
-					Term:         term,
-					CandidateID:  rf.me,
-					LastLogTerm:  lastLogTerm,
-					LastLogIndex: lastLogIndex,
-				}
-				for i := range rf.peers {
-					if rf.state == CANDIDATE && i != rf.me {
-						go func(args *RequestVoteArgs, i int) {
-							reply := &RequestVoteReply{}
-							rf.sendRequestVote(i, args, reply)
-						}(args, i)
-					}
-				}
-				rf.timer.Reset(time.Duration(TIMEOUTInterval+rand.New(rf.seed).Intn(RANDOMInterval)) * time.Millisecond)
-				select {
-				case <-rf.timer.C:
-				case <-rf.stateUpdateCh:
-					rf.timer.Stop()
-				}
-				break
-			}
-		}
-	}()
-
-	// goroutine to monitor log entry and apply command to state machine
+	// start goroutine to monitor log entry and apply command to state machine
 	go func() {
 		for {
 			select {
 			case <-rf.commitUpdateCh:
+				offset := rf.log[0].EntryIndex
 				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 					applyCh <- ApplyMsg{
 						CommandValid: true,
-						Command:      rf.log[i].Command,
-						CommandIndex: i,
+						Command:      rf.log[i-offset].Command,
+						CommandIndex: rf.log[i-offset].EntryIndex,
 					}
 					rf.lastApplied = i
 					DPrintf("server %d applies Entries %d\n", rf.me, i)
@@ -697,4 +636,62 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 	}()
 	return rf
+}
+
+func (rf *Raft) startStateMachine() {
+	for {
+		switch rf.state {
+		case FOLLOWER:
+			rf.timer.Reset(time.Duration(TIMEOUTInterval+rand.New(rf.seed).Intn(RANDOMInterval)) * time.Millisecond)
+			select {
+			case <-rf.timer.C:
+				rf.state = CANDIDATE
+			case <-rf.stateUpdateCh:
+				rf.timer.Stop()
+			}
+			break
+		case LEADER:
+			go rf.broadcastAppendEntries(true)
+			rf.timer.Reset(time.Duration(HEARTBEATInterval) * time.Millisecond)
+			select {
+			case <-rf.timer.C:
+			case <-rf.stateUpdateCh:
+				rf.timer.Stop()
+			}
+			break
+		case CANDIDATE:
+			rf.mu.Lock()
+			rf.currentTerm++
+			// DPrintf("server %d starts the election, term%d\n", rf.me, rf.currentTerm)
+			rf.votedFor = rf.me
+			rf.voteRecv = 1
+			term := rf.currentTerm
+			lastLogIndex := rf.log[len(rf.log)-1].EntryIndex
+			lastLogTerm := rf.log[len(rf.log)-1].EntryTerm
+			rf.mu.Unlock()
+
+			// start leader election
+			args := &RequestVoteArgs{
+				Term:         term,
+				CandidateID:  rf.me,
+				LastLogTerm:  lastLogTerm,
+				LastLogIndex: lastLogIndex,
+			}
+			for i := range rf.peers {
+				if rf.state == CANDIDATE && i != rf.me {
+					go func(args *RequestVoteArgs, i int) {
+						reply := &RequestVoteReply{}
+						rf.sendRequestVote(i, args, reply)
+					}(args, i)
+				}
+			}
+			rf.timer.Reset(time.Duration(TIMEOUTInterval+rand.New(rf.seed).Intn(RANDOMInterval)) * time.Millisecond)
+			select {
+			case <-rf.timer.C:
+			case <-rf.stateUpdateCh:
+				rf.timer.Stop()
+			}
+			break
+		}
+	}
 }
