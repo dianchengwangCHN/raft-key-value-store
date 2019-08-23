@@ -3,7 +3,8 @@ package raftkv
 import (
 	"crypto/rand"
 	"math/big"
-	mrand "math/rand"
+
+	// mrand "math/rand"
 
 	// "sync"
 
@@ -29,35 +30,46 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.id = nrand()
-	ck.leaderID = mrand.Intn(len(servers))
+	ck.leaderID = 0
+	// ck.leaderID = mrand.Intn(len(servers))
 	ck.opSerialID = 0
 	return ck
 }
 
-func (ck *Clerk) sendRPC(args interface{}, reply ClerkRPCReply, op string) {
-	for {
-		var ok bool
-		if op == "Get" {
-			ok = ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
-		} else {
-			ok = ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
-		}
-		if ok {
-			if !reply.GetWrongLeader() {
-				return
-			}
-			// If request is rejected because of incorrect leader, then change leaderID
-			if reply.GetLeaderID() != -1 {
-				ck.leaderID = reply.GetLeaderID()
-				reply.SetLeaderID(-1)
-			} else { // If the server also do not know the LeaderID
-				ck.leaderID = mrand.Intn(len(ck.servers))
-			}
-		} else {
-			// Whenever RPC timeout, should retry with another randomly-chosen server
-			ck.leaderID = mrand.Intn(len(ck.servers))
-		}
+func (ck *Clerk) sendRPC(args interface{}, reply ClerkRPCReply, op string) bool {
+	var ok bool
+	DPrintf("client %d sent %v RPC to %d, serialID: %d\n", ck.id, op, ck.leaderID, ck.opSerialID-1)
+	switch op {
+	case "Get":
+		ok = ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
+	case "PutAppend":
+		ok = ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
+	default:
+		return ok
 	}
+
+	DPrintf("client %d got %v reply from %d, ok: %v, serialID: %d, WrongLeader: %v\n", ck.id, op, ck.leaderID, ok, ck.opSerialID-1, reply.GetWrongLeader())
+	if ok {
+		if !reply.GetWrongLeader() {
+			DPrintf("client %d got %v reply from %d, serialID: %d, success\n", ck.id, op, ck.leaderID, ck.opSerialID-1)
+			return ok
+		}
+		// If request is rejected because of incorrect leader, then change leaderID
+		if reply.GetLeaderID() != -1 {
+			// ck.leaderID = reply.GetLeaderID()
+			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+			reply.SetLeaderID(-1)
+		} else { // If the server also do not know the LeaderID
+			// ck.leaderID = mrand.Intn(len(ck.servers))
+			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		}
+	} else {
+		// Whenever RPC timeout, should retry with another randomly-chosen server
+		// ck.leaderID = mrand.Intn(len(ck.servers))
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+	}
+	ok = false
+	return ok
 }
 
 //
@@ -83,14 +95,19 @@ func (ck *Clerk) Get(key string) string {
 		ClientID: ck.id,
 		SerialID: opSerialID,
 	}
-	reply := &GetReply{
-		LeaderID: -1,
+
+	for {
+		reply := &GetReply{
+			LeaderID: -1,
+		}
+		ok := ck.sendRPC(args, reply, "Get")
+		if ok {
+			if reply.Err == OK {
+				return reply.Value
+			}
+			return ""
+		}
 	}
-	ck.sendRPC(args, reply, "Get")
-	if reply.Err == OK {
-		return reply.Value
-	}
-	return ""
 }
 
 //
@@ -116,10 +133,16 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ClientID: ck.id,
 		SerialID: opSerialID,
 	}
-	reply := &PutAppendReply{
-		LeaderID: -1,
+
+	for {
+		reply := &PutAppendReply{
+			LeaderID: -1,
+		}
+		ok := ck.sendRPC(args, reply, "PutAppend")
+		if ok {
+			break
+		}
 	}
-	ck.sendRPC(args, reply, "PutAppend")
 }
 
 func (ck *Clerk) Put(key string, value string) {

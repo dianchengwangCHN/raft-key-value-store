@@ -45,54 +45,118 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvMap             map[string]string     // map used to store key-value data
-	lastClerkSerialID map[int64]uint        // store the last received SerialID for each clerk (Since it's OK to assume that a client will make only one call into a Clerk at a time.)
-	entryAppliedChs   map[int]chan struct{} // store the channels used to notify operation success on each log index
+	kvMap             map[string]string    // map used to store key-value data
+	lastClerkSerialID map[int64]uint       // store the last received SerialID for each clerk (Since it's OK to assume that a client will make only one call into a Clerk at a time.)
+	entryAppliedChs   map[int]chan DoneMsg // store the channels used to notify operation success on each log index
+}
+
+func (kv *KVServer) isDone(clientID int64, serialID uint) bool {
+	kv.mu.Lock()
+	v, ok := kv.lastClerkSerialID[clientID]
+	kv.mu.Unlock()
+	if ok {
+		return v >= serialID
+	}
+	return false
+}
+
+func (kv *KVServer) startAgreement(command Op) bool {
+	index, _, isLeader := kv.rf.Start(command)
+	if isLeader {
+		DPrintf("server %d start agreement on %d\n", kv.me, index)
+		kv.mu.Lock()
+		if _, ok := kv.entryAppliedChs[index]; !ok {
+			kv.entryAppliedChs[index] = make(chan DoneMsg)
+		}
+		DPrintf("server %d create channel for index%d\n", kv.me, index)
+		doneCh := kv.entryAppliedChs[index]
+		kv.mu.Unlock()
+		select {
+		case <-time.After(AGREEMENTTIMEOUTInterval * time.Millisecond):
+			DPrintf("server %d agreement timeout\n", kv.me)
+		case msg := <-doneCh:
+			if msg.ClientID == command.ClientID && msg.SerialID == command.SerialID {
+				// kv.mu.Lock()
+				// if kv.lastClerkSerialID[msg.ClientID] <= msg.SerialID {
+				// 	kv.lastClerkSerialID[msg.ClientID] = msg.SerialID
+				// }
+				// kv.mu.Unlock()
+				DPrintf("server %d update lastSerialID to %d for client %d\n", kv.me, msg.SerialID, msg.ClientID)
+				return true
+			}
+			// doneCh <- msg
+		}
+	}
+	return false
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	_, isLeader := kv.rf.GetState()
-	succeed := false
-	if isLeader {
-		command := Op{
-			Type:     "Get",
-			Key:      args.Key,
-			ClientID: args.ClientID,
-			SerialID: args.SerialID,
-		}
-		index, term, isLeader := kv.rf.Start(command)
-		_, _, _ = index, term, isLeader
-		if _, ok := kv.entryAppliedChs[index]; !ok {
-			kv.entryAppliedChs[index] = make(chan struct{})
-		}
-		doneCh := kv.entryAppliedChs[index]
-		select {
-		case <-time.After(AGREEMENTTIMEOUTInterval * time.Millisecond):
-		case <-doneCh:
-
+	var succeed bool
+	if kv.isDone(args.ClientID, args.SerialID) {
+		succeed = true
+	} else {
+		_, isLeader := kv.rf.GetState()
+		if isLeader {
+			command := Op{
+				Type:     "Get",
+				Key:      args.Key,
+				ClientID: args.ClientID,
+				SerialID: args.SerialID,
+			}
+			succeed = kv.startAgreement(command)
 		}
 	}
 
 	if succeed {
 		reply.WrongLeader = false
-
-	} else {
-		reply.WrongLeader = true
-		if ID := kv.rf.GetLeaderID(); ID != -1 {
-			reply.LeaderID = ID
+		kv.mu.Lock()
+		v, ok := kv.kvMap[args.Key]
+		kv.mu.Unlock()
+		reply.Value = v
+		if ok {
+			reply.Err = OK
+		} else {
+			reply.Err = ErrNoKey
 		}
+		return
+	}
+	reply.WrongLeader = true
+	if ID := kv.rf.GetLeaderID(); ID != -1 {
+		reply.LeaderID = ID
 	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	_, isLeader := kv.rf.GetState()
-	if isLeader {
-
+	succeed := false
+	if kv.isDone(args.ClientID, args.SerialID) {
+		succeed = true
 	} else {
-
+		_, isLeader := kv.rf.GetState()
+		if isLeader {
+			command := Op{
+				Type:     OpType(args.Op),
+				Key:      args.Key,
+				Value:    args.Value,
+				ClientID: args.ClientID,
+				SerialID: args.SerialID,
+			}
+			succeed = kv.startAgreement(command)
+		}
 	}
+
+	if succeed {
+		reply.WrongLeader = false
+		DPrintf("server %d replied: Succeed, WrongLeader: %v\n", kv.me, reply.WrongLeader)
+		return
+	}
+	DPrintf("server %d replied: WrongLeader\n", kv.me)
+	reply.WrongLeader = true
+	if ID := kv.rf.GetLeaderID(); ID != -1 {
+		reply.LeaderID = ID
+	}
+	return
 }
 
 //
@@ -135,6 +199,45 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.kvMap = make(map[string]string)
+	kv.lastClerkSerialID = make(map[int64]uint)
+	kv.entryAppliedChs = make(map[int]chan DoneMsg)
+
+	go kv.startApplyMsgExecutor()
 
 	return kv
+}
+
+// DoneMsg models the message passed to doneCh
+type DoneMsg struct {
+	ClientID int64
+	SerialID uint
+}
+
+func (kv *KVServer) startApplyMsgExecutor() {
+	for {
+		msg := <-kv.applyCh
+		command := msg.Command.(Op)
+		kv.mu.Lock()
+		switch command.Type {
+		case "Get":
+
+		case "Put":
+			kv.kvMap[command.Key] = command.Value
+		case "Append":
+			kv.kvMap[command.Key] += command.Value
+		}
+		index := msg.CommandIndex
+		if kv.lastClerkSerialID[command.ClientID] <= command.SerialID {
+			kv.lastClerkSerialID[command.ClientID] = command.SerialID
+		}
+		kv.mu.Unlock()
+		if ch, ok := kv.entryAppliedChs[index]; ok {
+			ch <- DoneMsg{
+				ClientID: command.ClientID,
+				SerialID: command.SerialID,
+			}
+		}
+		DPrintf("Server %d applied entry %d\n", kv.me, index)
+	}
 }

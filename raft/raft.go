@@ -649,7 +649,7 @@ func (rf *Raft) startStateMachine() {
 			case <-rf.stateUpdateCh:
 				rf.timer.Stop()
 			}
-			break
+			// break
 		case LEADER:
 			go rf.broadcastAppendEntries(true)
 			rf.timer.Reset(time.Duration(HEARTBEATInterval) * time.Millisecond)
@@ -658,7 +658,7 @@ func (rf *Raft) startStateMachine() {
 			case <-rf.stateUpdateCh:
 				rf.timer.Stop()
 			}
-			break
+			// break
 		case CANDIDATE:
 			rf.mu.Lock()
 			rf.currentTerm++
@@ -691,7 +691,7 @@ func (rf *Raft) startStateMachine() {
 			case <-rf.stateUpdateCh:
 				rf.timer.Stop()
 			}
-			break
+			// break
 		}
 	}
 }
