@@ -32,7 +32,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.id = nrand()
 	ck.leaderID = 0
 	// ck.leaderID = mrand.Intn(len(servers))
-	ck.opSerialID = 0
+	ck.opSerialID = 1
 	return ck
 }
 
@@ -48,28 +48,14 @@ func (ck *Clerk) sendRPC(args interface{}, reply ClerkRPCReply, op string) bool 
 		return ok
 	}
 
-	DPrintf("client %d got %v reply from %d, ok: %v, serialID: %d, WrongLeader: %v\n", ck.id, op, ck.leaderID, ok, ck.opSerialID-1, reply.GetWrongLeader())
+	DPrintf("client %d got %v reply from %d, ok: %v, serialID: %d, WrongLeader: %v, Err: %v\n", ck.id, op, ck.leaderID, ok, ck.opSerialID-1, reply.GetWrongLeader(), reply.GetErr())
 	if ok {
-		if !reply.GetWrongLeader() {
-			DPrintf("client %d got %v reply from %d, serialID: %d, success\n", ck.id, op, ck.leaderID, ck.opSerialID-1)
-			return ok
+		if reply.GetErr() != ErrOpFail && reply.GetErr() != "" {
+			return true
 		}
-		// If request is rejected because of incorrect leader, then change leaderID
-		if reply.GetLeaderID() != -1 {
-			// ck.leaderID = reply.GetLeaderID()
-			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-			reply.SetLeaderID(-1)
-		} else { // If the server also do not know the LeaderID
-			// ck.leaderID = mrand.Intn(len(ck.servers))
-			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-		}
-	} else {
-		// Whenever RPC timeout, should retry with another randomly-chosen server
-		// ck.leaderID = mrand.Intn(len(ck.servers))
-		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
 	}
-	ok = false
-	return ok
+	ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+	return false
 }
 
 //
@@ -85,10 +71,8 @@ func (ck *Clerk) sendRPC(args interface{}, reply ClerkRPCReply, op string) bool 
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	// ck.mu.Lock()
 	opSerialID := ck.opSerialID
 	ck.opSerialID++
-	// ck.mu.Unlock()
 
 	args := &GetArgs{
 		Key:      key,
@@ -121,10 +105,8 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// ck.mu.Lock()
 	opSerialID := ck.opSerialID
 	ck.opSerialID++
-	// ck.mu.Unlock()
 
 	args := &PutAppendArgs{
 		Key:      key,
@@ -139,7 +121,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			LeaderID: -1,
 		}
 		ok := ck.sendRPC(args, reply, "PutAppend")
-		if ok {
+		if ok && reply.Err == OK {
 			break
 		}
 	}

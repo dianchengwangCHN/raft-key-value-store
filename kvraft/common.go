@@ -1,8 +1,9 @@
 package raftkv
 
 const (
-	OK       = "OK"
-	ErrNoKey = "ErrNoKey"
+	OK        = "OK"
+	ErrNoKey  = "ErrNoKey"
+	ErrOpFail = "ErrOpFail"
 )
 
 type Err string
@@ -10,6 +11,7 @@ type Err string
 // ClerkRPCReply defines two commonly used methods for different types of client RPC replies.
 type ClerkRPCReply interface {
 	GetWrongLeader() bool
+	GetErr() Err
 	GetLeaderID() int
 	SetLeaderID(leaderID int)
 }
@@ -35,6 +37,11 @@ type PutAppendReply struct {
 // GetWrongLeader returns the WrongLeader field of PutAppendReply
 func (reply *PutAppendReply) GetWrongLeader() bool {
 	return reply.WrongLeader
+}
+
+// GetErr returns the Err field of PutAppendReply
+func (reply *PutAppendReply) GetErr() Err {
+	return reply.Err
 }
 
 // GetLeaderID returns the LeaderID field of PutAppendReply
@@ -64,6 +71,11 @@ type GetReply struct {
 // GetWrongLeader returns the WrongLeader field of GetReply
 func (reply *GetReply) GetWrongLeader() bool {
 	return reply.WrongLeader
+}
+
+// GetErr returns the Err field of GetReply
+func (reply *GetReply) GetErr() Err {
+	return reply.Err
 }
 
 // GetLeaderID returns the LeaderID field of GetReply
