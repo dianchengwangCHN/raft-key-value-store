@@ -1,5 +1,5 @@
 # raft-key-value-store
-A distributed key-value store based on Raft consensus algorithm. This is the course project of MIT 6.824 Distributed Systems.
+This is the course project of MIT 6.824 Distributed Systems. This project is a distributed key-value store based on the **Raft** consensus algorithm developed in **GoLang**. It is implemented to support concurrent request utilizing **Mutex**, **Channel**, and **Goroutine**. It is tested under a simulated environment, which covers the circumstances such as network loss, network partition, and partial cluster down.
 
 ## Lab 2: Raft Consensus Algorithm
   - [x] Leader Election
@@ -50,7 +50,7 @@ A distributed key-value store based on Raft consensus algorithm. This is the cou
   - [x] Client Interface
   - [ ] Log Compaction
   
-  Currently only finished client interface part. Test result is shown as follows:
+  Currently only finished the client interface part. Test result is shown as follows:
   ```
   Test: one client (3A) ...
   labgob warning: Decoding into a non-default variable/field LeaderID may not work
