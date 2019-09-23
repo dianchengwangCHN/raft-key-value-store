@@ -1,6 +1,7 @@
 package raftkv
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"time"
@@ -75,10 +76,10 @@ func (kv *KVServer) startAgreement(command Op) bool {
 			DPrintf("server %d agreement on %d timeout\n", kv.me, index)
 		case msg := <-doneCh:
 			if msg.ClientID == command.ClientID && msg.SerialID == command.SerialID {
-				// close(doneCh)
-				// kv.mu.Lock()
-				// delete(kv.entryAppliedChs, index)
-				// kv.mu.Unlock()
+				close(doneCh)
+				kv.mu.Lock()
+				delete(kv.entryAppliedChs, index)
+				kv.mu.Unlock()
 				DPrintf("server %d update lastSerialID to %d for client %d\n", kv.me, msg.SerialID, msg.ClientID)
 				return true
 			}
@@ -218,32 +219,53 @@ type DoneMsg struct {
 func (kv *KVServer) startApplyMsgExecutor() {
 	for {
 		msg := <-kv.applyCh
-		command := msg.Command.(Op)
-		kv.mu.Lock()
-		if command.SerialID > kv.lastClerkSerialID[command.ClientID] {
-			switch command.Type {
-			case "Put":
-				kv.kvMap[command.Key] = command.Value
-			case "Append":
-				kv.kvMap[command.Key] += command.Value
+		if msg.CommandValid {
+			command := msg.Command.(Op)
+			kv.mu.Lock()
+			if command.SerialID > kv.lastClerkSerialID[command.ClientID] {
+				switch command.Type {
+				case "Put":
+					kv.kvMap[command.Key] = command.Value
+				case "Append":
+					kv.kvMap[command.Key] += command.Value
+				}
+				kv.lastClerkSerialID[command.ClientID] = command.SerialID
+				DPrintf("server %d updated SerialID of Client %d to %d\n", kv.me, command.ClientID, command.SerialID)
 			}
-			kv.lastClerkSerialID[command.ClientID] = command.SerialID
-			DPrintf("server %d updated SerialID of Client %d to %d\n", kv.me, command.ClientID, command.SerialID)
-		}
-		index := msg.CommandIndex
-		DPrintf("Server %d applied entry %d\n", kv.me, index)
-		if ch, ok := kv.entryAppliedChs[index]; ok {
-			select {
-			case <-ch:
-			default:
+			index := msg.CommandIndex
+			DPrintf("Server %d applied entry %d\n", kv.me, index)
+			if ch, ok := kv.entryAppliedChs[index]; ok {
+				select {
+				case <-ch:
+				default:
+				}
+				kv.entryAppliedChs[index] <- DoneMsg{
+					ClientID: command.ClientID,
+					SerialID: command.SerialID,
+				}
+			} else {
+				ch = make(chan DoneMsg, 1)
 			}
-			kv.entryAppliedChs[index] <- DoneMsg{
-				ClientID: command.ClientID,
-				SerialID: command.SerialID,
+
+			// check if need log compaction
+			if kv.maxraftstate != -1 && kv.maxraftstate <= kv.rf.GetStateSize() {
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.kvMap)
+				e.Encode(kv.lastClerkSerialID)
+				snapshot := w.Bytes()
+				go kv.rf.StartSnapshot(snapshot)
 			}
+			kv.mu.Unlock()
 		} else {
-			ch = make(chan DoneMsg, 1)
+			r := bytes.NewBuffer(msg.Snapshot)
+			d := labgob.NewDecoder(r)
+			kv.mu.Lock()
+			kv.kvMap = make(map[string]string)
+			kv.lastClerkSerialID = make(map[int64]uint)
+			d.Decode(&kv.kvMap)
+			d.Decode(&kv.lastClerkSerialID)
+			kv.mu.Unlock()
 		}
-		kv.mu.Unlock()
 	}
 }

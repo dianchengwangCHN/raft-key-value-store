@@ -55,6 +55,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	Snapshot     []byte
 }
 
 // LogEntry defines the data model of each log entry
@@ -107,6 +108,11 @@ func (rf *Raft) GetState() (int, bool) {
 // GetLeaderID returns the server ID that get the vote from the current server
 func (rf *Raft) GetLeaderID() int {
 	return rf.votedFor
+}
+
+// GetStateSize returns the current size of raft state in persister
+func (rf *Raft) GetStateSize() int {
+	return rf.persister.RaftStateSize()
 }
 
 //
@@ -486,38 +492,40 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 	}
 }
 
-// // InstallSnapshotArgs is the data model of the InstallSnapshot RPC arguments
-// type InstallSnapshotArgs struct {
-// 	Term              int
-// 	LeaderID          int
-// 	LastIncludedIndex int
-// 	LastIncludedTerm  int
-// 	Offset            int
-// 	Data              []byte
-// 	Done              bool
-// }
+// InstallSnapshotArgs is the data model of the InstallSnapshot RPC arguments
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderID          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+}
 
-// // InstallSnapshotReply is the data model of the InstallSnapshot RPC reply
-// type InstallSnapshotReply struct {
-// 	Term int
-// }
+// InstallSnapshotReply is the data model of the InstallSnapshot RPC reply
+type InstallSnapshotReply struct {
+	Term int
+}
 
-// // InstallSnapshot is the InstallSnapshot RPC handler
-// func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-// 	rf.mu.Lock()
-// 	defer rf.mu.Unlock()
+// InstallSnapshot is the InstallSnapshot RPC handler
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-// 	if args.Term < rf.currentTerm {
-// 		reply.Term = rf.currentTerm
-// 		return
-// 	}
-// }
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+}
 
-// func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-// 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 
-// 	return ok
-// }
+	return ok
+}
+
+func (rf *Raft) StartSnapshot(snapshot []byte) {
+
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -615,41 +623,28 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start goroutine to maintain the server state
-	go rf.startStateMachine()
+	go rf.startStateMachineDaemon()
 
 	// start goroutine to monitor log entry and apply command to state machine
-	go func() {
-		for {
-			select {
-			case <-rf.commitUpdateCh:
-				offset := rf.log[0].EntryIndex
-				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-					applyCh <- ApplyMsg{
-						CommandValid: true,
-						Command:      rf.log[i-offset].Command,
-						CommandIndex: rf.log[i-offset].EntryIndex,
-					}
-					rf.lastApplied = i
-					DPrintf("server %d applies Entries %d\n", rf.me, i)
-				}
-			}
-		}
-	}()
+	go rf.startLogCommitterDaemon()
+
 	return rf
 }
 
-func (rf *Raft) startStateMachine() {
+func (rf *Raft) startStateMachineDaemon() {
 	for {
-		switch rf.state {
+		state := rf.state
+		switch state {
 		case FOLLOWER:
 			rf.timer.Reset(time.Duration(TIMEOUTInterval+rand.New(rf.seed).Intn(RANDOMInterval)) * time.Millisecond)
 			select {
 			case <-rf.timer.C:
+				rf.mu.Lock()
 				rf.state = CANDIDATE
+				rf.mu.Unlock()
 			case <-rf.stateUpdateCh:
 				rf.timer.Stop()
 			}
-			// break
 		case LEADER:
 			go rf.broadcastAppendEntries(true)
 			rf.timer.Reset(time.Duration(HEARTBEATInterval) * time.Millisecond)
@@ -658,7 +653,6 @@ func (rf *Raft) startStateMachine() {
 			case <-rf.stateUpdateCh:
 				rf.timer.Stop()
 			}
-			// break
 		case CANDIDATE:
 			rf.mu.Lock()
 			rf.currentTerm++
@@ -691,7 +685,25 @@ func (rf *Raft) startStateMachine() {
 			case <-rf.stateUpdateCh:
 				rf.timer.Stop()
 			}
-			// break
 		}
+	}
+}
+
+func (rf *Raft) startLogCommitterDaemon() {
+	for {
+		// select {
+		// case <-rf.commitUpdateCh:
+		<-rf.commitUpdateCh
+		offset := rf.log[0].EntryIndex
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i-offset].Command,
+				CommandIndex: rf.log[i-offset].EntryIndex,
+			}
+			rf.lastApplied = i
+			DPrintf("server %d applies Entries %d\n", rf.me, i)
+		}
+		// }
 	}
 }
