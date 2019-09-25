@@ -254,7 +254,7 @@ func (kv *KVServer) startApplyMsgExecutor() {
 				e.Encode(kv.kvMap)
 				e.Encode(kv.lastClerkSerialID)
 				snapshot := w.Bytes()
-				go kv.rf.StartSnapshot(snapshot)
+				go kv.rf.StartSnapshot(snapshot, msg.CommandIndex)
 			}
 			kv.mu.Unlock()
 		} else {
