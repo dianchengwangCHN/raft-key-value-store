@@ -139,7 +139,7 @@ func (rf *Raft) encodeState() []byte {
 //
 // restore previously persisted state.
 //
-func (rf *Raft) readPersist(data []byte) {
+func (rf *Raft) readPersistState(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
@@ -157,6 +157,17 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+	}
+}
+
+func (rf *Raft) readPersistSnapshot(data []byte) {
+	if data == nil || len(data) < 1 {
+		return
+	}
+
+	rf.applyCh <- ApplyMsg{
+		CommandValid: false,
+		Snapshot:     data,
 	}
 }
 
@@ -331,21 +342,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		// DPrintf("server %d rejects Heartbeat from %d, term%d, args{index: %d, term: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
-	} else if args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex ||
-		args.PrevLogTerm != rf.log[args.PrevLogIndex].EntryTerm {
+	} else if offset := rf.log[0].EntryIndex; args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex ||
+		args.PrevLogIndex < offset || args.PrevLogTerm != rf.log[args.PrevLogIndex-offset].EntryTerm {
 		reply.Success = false
 		if args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex {
 			reply.ConflictIndex = rf.log[len(rf.log)-1].EntryIndex + 1
-		} else {
-			index := args.PrevLogIndex - rf.log[0].EntryIndex - 1
+		} else if args.PrevLogIndex > offset {
+			index := args.PrevLogIndex - offset - 1
 			for index > 1 && rf.log[index-1].EntryTerm == rf.log[index].EntryTerm {
 				index--
 			}
+
 			reply.ConflictIndex = rf.log[index].EntryIndex
 		}
 		// DPrintf("server %d rejects Heartbeat from %d, term%d, args{index: %d, term: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
 	} else {
-		DPrintf("server %d, term%d accepts AppendEntries form %d, term%d, args{index: %d, term: %d, commit: %d}\n", rf.me, rf.currentTerm, args.LeaderID, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+		// DPrintf("server %d, term%d accepts AppendEntries form %d, term%d, args{index: %d, term: %d, commit: %d}\n", rf.me, rf.currentTerm, args.LeaderID, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 		reply.Success = true
 		// valid request keeps server as follower
 		rf.votedFor = -1
@@ -353,7 +365,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.stateUpdateCh <- struct{}{}
 
 		// update entries
-		i, j := args.PrevLogIndex+1, 0
+		offset := rf.log[0].EntryIndex
+		i, j := args.PrevLogIndex+1-offset, 0
 		for ; i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
 			if rf.log[i].EntryTerm != args.Entries[j].EntryTerm {
 				break
@@ -375,7 +388,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			} else {
 				min = lastNewLogIndex
 			}
-			if rf.log[min].EntryTerm == rf.currentTerm {
+			if rf.log[min-offset].EntryTerm == rf.currentTerm {
 				rf.commitIndex = min
 				rf.commitUpdateCh <- struct{}{}
 				// DPrintf("server %d commits index %d, log length: %d, term%d\n", rf.me, rf.commitIndex, len(rf.log), rf.currentTerm)
@@ -419,8 +432,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 				// update commitIndex
 				if rf.matchIndex[server] > rf.commitIndex {
-					N := rf.matchIndex[server]
-					if rf.log[N].EntryTerm == rf.currentTerm {
+					offset, N := rf.log[0].EntryIndex, rf.matchIndex[server]
+					// DPrintf("EntryIndex: %d, Index in log: %d, log length: %d\n", N, N-offset, len(rf.log))
+					if rf.log[N-offset].EntryTerm == rf.currentTerm {
 						count := 0
 						for _, index := range rf.matchIndex {
 							if index >= N {
@@ -457,6 +471,7 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 		}
 		go func(i int) {
 			for {
+				var ok bool
 				rf.mu.Lock()
 				if rf.state != LEADER || !isHeartbeat && rf.log[len(rf.log)-1].EntryIndex < rf.nextIndex[i] {
 					rf.mu.Unlock()
@@ -480,17 +495,14 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 						args.Entries = make([]LogEntry, 0)
 					} else {
 						args.Entries = make([]LogEntry, rf.log[len(rf.log)-1].EntryIndex-prevLogIndex)
-						copy(args.Entries, rf.log[prevLogIndex+1:])
+						copy(args.Entries, rf.log[prevLogIndex+1-offset:])
 					}
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{
 						ConflictIndex: -1,
 					}
-					ok := rf.sendAppendEntries(i, args, reply)
+					ok = rf.sendAppendEntries(i, args, reply)
 					// DPrintf("leader %d sends AppendEntries to %d, term%d, commit%d %t\n", rf.me, i, rf.currentTerm, args.LeaderCommit, ok)
-					if ok || isHeartbeat {
-						break
-					}
 				} else { // send snapshot
 					lastIncludedIndex := rf.log[0].EntryIndex
 					lastIncludedTerm := rf.log[0].EntryTerm
@@ -504,13 +516,11 @@ func (rf *Raft) broadcastAppendEntries(isHeartbeat bool) {
 						LastIncludedTerm:  lastIncludedTerm,
 						Data:              data,
 					}
-					reply := &InstallSnapshotReply{
-						Term: -1,
-					}
-					ok := rf.sendInstallSnapshot(i, args, reply)
-					if ok || reply.Term == term {
-						break
-					}
+					reply := &InstallSnapshotReply{}
+					ok = rf.sendInstallSnapshot(i, args, reply)
+				}
+				if ok || isHeartbeat {
+					break
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -549,33 +559,43 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.state = FOLLOWER
-		rf.stateUpdateCh <- struct{}{}
 	}
+	rf.stateUpdateCh <- struct{}{}
+
+	reply.Term = rf.currentTerm
 
 	if args.LastIncludedTerm <= rf.log[0].EntryIndex {
 		return
 	}
 
+	// lastIndex := rf.log[len(rf.log)-1].EntryIndex
+	// size := 1
+	// if args.LastIncludedIndex < lastIndex {
+	// 	size += lastIndex - args.LastIncludedIndex
+	// }
+
+	// update log
+	newLog := make([]LogEntry, 0)
+	newLog = append(newLog, LogEntry{
+		EntryIndex: args.LastIncludedIndex,
+		EntryTerm:  args.LastIncludedTerm,
+	})
+	// DPrintf("server %d first index: %d, lastIncludedIndex: %d\n", rf.me, newLog[0].EntryIndex, args.LastIncludedIndex)
+
+	if lastIndex := rf.log[len(rf.log)-1].EntryIndex; lastIndex > args.LastIncludedIndex {
+		offset := rf.log[0].EntryIndex
+		newLog = append(newLog, rf.log[args.LastIncludedIndex+1-offset:]...)
+	}
+	// for i, offset := args.LastIncludedIndex+1, rf.log[0].EntryIndex; i <= lastIndex; i++ {
+	// 	newLog = append(newLog, rf.log[i-offset])
+	// }
+	rf.log = newLog
+	DPrintf("server %d newLog length: %d, lastIncludeIndex: %d, first index: %d\n", rf.me, len(rf.log), args.LastIncludedIndex, newLog[0].EntryIndex)
+
+	// persist state and snapshot
 	stateData := rf.encodeState()
 	rf.persister.SaveStateAndSnapshot(stateData, args.Data)
 
-	lastIndex := rf.log[len(rf.log)-1].EntryIndex
-	size := 1
-	if args.LastIncludedIndex < lastIndex {
-		size = lastIndex - args.LastIncludedIndex + 1
-	}
-
-	// update log
-	newLog := make([]LogEntry, size)
-	newLog = append(newLog, LogEntry{
-		EntryTerm:  args.LastIncludedTerm,
-		EntryIndex: args.LastIncludedIndex,
-	})
-	for i, offset := args.LastIncludedIndex+1, rf.log[0].EntryIndex; i <= lastIndex; i++ {
-		newLog = append(newLog, rf.log[i-offset])
-	}
-	rf.log = newLog
-	// persist state and snapshot
 	rf.applyCh <- ApplyMsg{
 		CommandValid: false,
 		Snapshot:     args.Data,
@@ -621,19 +641,24 @@ func (rf *Raft) StartSnapshot(snapshot []byte, lastIncludedIndex int) {
 		return
 	}
 	newLen := lastIndex - lastIncludedIndex + 1
-	newLog := make([]LogEntry, newLen)
+	newLog := make([]LogEntry, 0, newLen)
 
 	newLog = append(newLog, LogEntry{
 		EntryIndex: lastIncludedIndex,
 		EntryTerm:  rf.log[lastIncludedIndex-offset].EntryTerm,
 	})
+	// DPrintf("server %d first index: %d, lastIncludedIndex: %d\n", rf.me, newLog[0].EntryIndex, lastIncludedIndex)
 
-	for i := lastIncludedIndex + 1; i <= lastIndex; i++ {
-		newLog = append(newLog, rf.log[i-offset])
-	}
+	newLog = append(newLog, rf.log[lastIndex+1-offset:]...)
+	// for i := lastIncludedIndex + 1; i <= lastIndex; i++ {
+	// 	newLog = append(newLog, rf.log[i-offset])
+	// }
 
 	rf.log = newLog
-	// persist
+	DPrintf("server %d newLog length: %d, lastIncludedIndex: %d, first index: %d\n", rf.me, len(rf.log), lastIncludedIndex, newLog[0].EntryIndex)
+	// persist state and snapshot
+	stateData := rf.encodeState()
+	rf.persister.SaveStateAndSnapshot(stateData, snapshot)
 }
 
 //
@@ -729,7 +754,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitUpdateCh = make(chan struct{}, 100)
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.readPersistState(rf.persister.ReadRaftState())
+	rf.readPersistSnapshot(rf.persister.ReadSnapshot())
 
 	// start goroutine to maintain the server state
 	go rf.startStateMachineDaemon()

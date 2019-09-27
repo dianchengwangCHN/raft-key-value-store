@@ -11,7 +11,7 @@ import (
 	"github.com/dianchengwangCHN/raft-key-value-store/raft"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -73,14 +73,14 @@ func (kv *KVServer) startAgreement(command Op) bool {
 		kv.mu.Unlock()
 		select {
 		case <-time.After(AGREEMENTTIMEOUTInterval * time.Millisecond):
-			DPrintf("server %d agreement on %d timeout\n", kv.me, index)
+			// DPrintf("server %d agreement on %d timeout\n", kv.me, index)
 		case msg := <-doneCh:
 			if msg.ClientID == command.ClientID && msg.SerialID == command.SerialID {
 				close(doneCh)
 				kv.mu.Lock()
 				delete(kv.entryAppliedChs, index)
 				kv.mu.Unlock()
-				DPrintf("server %d update lastSerialID to %d for client %d\n", kv.me, msg.SerialID, msg.ClientID)
+				// DPrintf("server %d update lastSerialID to %d for client %d\n", kv.me, msg.SerialID, msg.ClientID)
 				return true
 			}
 		}
@@ -93,7 +93,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	var succeed bool
 	reply.WrongLeader = true
 	if kv.isDone(args.ClientID, args.SerialID) {
-		DPrintf("server %d replied SerialID: %d is done\n", kv.me, args.SerialID)
+		// DPrintf("server %d replied SerialID: %d is done\n", kv.me, args.SerialID)
 		succeed = true
 	} else {
 		_, isLeader := kv.rf.GetState()
@@ -193,7 +193,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv := new(KVServer)
 	kv.me = me
-	kv.maxraftstate = maxraftstate
+	// kv.maxraftstate = maxraftstate
+	kv.maxraftstate = 1
 
 	// You may need initialization code here.
 
@@ -205,7 +206,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.lastClerkSerialID = make(map[int64]uint)
 	kv.entryAppliedChs = make(map[int]chan DoneMsg)
 
-	go kv.startApplyMsgExecutor()
+	go kv.startApplyMsgDaemon()
 
 	return kv
 }
@@ -216,10 +217,11 @@ type DoneMsg struct {
 	SerialID uint
 }
 
-func (kv *KVServer) startApplyMsgExecutor() {
+func (kv *KVServer) startApplyMsgDaemon() {
 	for {
 		msg := <-kv.applyCh
 		if msg.CommandValid {
+			DPrintf("server %d, Command: %v, Index: %d\n", kv.me, msg.Command, msg.CommandIndex)
 			command := msg.Command.(Op)
 			kv.mu.Lock()
 			if command.SerialID > kv.lastClerkSerialID[command.ClientID] {
@@ -230,7 +232,7 @@ func (kv *KVServer) startApplyMsgExecutor() {
 					kv.kvMap[command.Key] += command.Value
 				}
 				kv.lastClerkSerialID[command.ClientID] = command.SerialID
-				DPrintf("server %d updated SerialID of Client %d to %d\n", kv.me, command.ClientID, command.SerialID)
+				// DPrintf("server %d updated SerialID of Client %d to %d\n", kv.me, command.ClientID, command.SerialID)
 			}
 			index := msg.CommandIndex
 			DPrintf("Server %d applied entry %d\n", kv.me, index)
@@ -248,7 +250,7 @@ func (kv *KVServer) startApplyMsgExecutor() {
 			}
 
 			// check if need log compaction
-			if kv.maxraftstate != -1 && kv.maxraftstate <= kv.rf.GetStateSize() {
+			if kv.maxraftstate != -1 && kv.rf.GetStateSize() >= kv.maxraftstate {
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
 				e.Encode(kv.kvMap)
