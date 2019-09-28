@@ -11,7 +11,7 @@ import (
 	"github.com/dianchengwangCHN/raft-key-value-store/raft"
 )
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -194,7 +194,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	// kv.maxraftstate = maxraftstate
-	kv.maxraftstate = 1
+	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
 

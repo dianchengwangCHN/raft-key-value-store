@@ -347,12 +347,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		if args.PrevLogIndex > rf.log[len(rf.log)-1].EntryIndex {
 			reply.ConflictIndex = rf.log[len(rf.log)-1].EntryIndex + 1
-		} else if args.PrevLogIndex > offset {
+		} else {
 			index := args.PrevLogIndex - offset - 1
 			for index > 1 && rf.log[index-1].EntryTerm == rf.log[index].EntryTerm {
 				index--
 			}
-
+			if index < 0 {
+				index = 0
+			}
 			reply.ConflictIndex = rf.log[index].EntryIndex
 		}
 		// DPrintf("server %d rejects Heartbeat from %d, term%d, args{index: %d, term: %d}\n", rf.me, args.LeaderID, rf.currentTerm, args.PrevLogIndex, args.PrevLogTerm)
@@ -580,6 +582,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		EntryIndex: args.LastIncludedIndex,
 		EntryTerm:  args.LastIncludedTerm,
 	})
+	if args.LastIncludedIndex > rf.lastApplied {
+		rf.lastApplied = args.LastIncludedIndex
+		if args.LastIncludedIndex > rf.commitIndex {
+			rf.commitIndex = rf.lastApplied
+		}
+	}
 	// DPrintf("server %d first index: %d, lastIncludedIndex: %d\n", rf.me, newLog[0].EntryIndex, args.LastIncludedIndex)
 
 	if lastIndex := rf.log[len(rf.log)-1].EntryIndex; lastIndex > args.LastIncludedIndex {
@@ -630,6 +638,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 	return ok
 }
 
+// StartSnapshot let Raft install the snapshot and compact the log
 func (rf *Raft) StartSnapshot(snapshot []byte, lastIncludedIndex int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -640,19 +649,16 @@ func (rf *Raft) StartSnapshot(snapshot []byte, lastIncludedIndex int) {
 	if lastIncludedIndex <= offset {
 		return
 	}
-	newLen := lastIndex - lastIncludedIndex + 1
-	newLog := make([]LogEntry, 0, newLen)
+	DPrintf("server %d lastIndex: %d, firstIndex: %d, lastIncludedIndex: %d\n", rf.me, lastIndex, offset, lastIncludedIndex)
 
+	newLog := make([]LogEntry, 0)
+	// why could this lastIncludedIndex be larger than lastIndex
 	newLog = append(newLog, LogEntry{
 		EntryIndex: lastIncludedIndex,
 		EntryTerm:  rf.log[lastIncludedIndex-offset].EntryTerm,
 	})
 	// DPrintf("server %d first index: %d, lastIncludedIndex: %d\n", rf.me, newLog[0].EntryIndex, lastIncludedIndex)
-
-	newLog = append(newLog, rf.log[lastIndex+1-offset:]...)
-	// for i := lastIncludedIndex + 1; i <= lastIndex; i++ {
-	// 	newLog = append(newLog, rf.log[i-offset])
-	// }
+	newLog = append(newLog, rf.log[lastIncludedIndex+1-offset:]...)
 
 	rf.log = newLog
 	DPrintf("server %d newLog length: %d, lastIncludedIndex: %d, first index: %d\n", rf.me, len(rf.log), lastIncludedIndex, newLog[0].EntryIndex)
@@ -826,19 +832,22 @@ func (rf *Raft) startStateMachineDaemon() {
 
 func (rf *Raft) startLogCommitterDaemon() {
 	for {
-		// select {
-		// case <-rf.commitUpdateCh:
 		<-rf.commitUpdateCh
-		offset := rf.log[0].EntryIndex
+
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[i-offset].Command,
-				CommandIndex: rf.log[i-offset].EntryIndex,
+			rf.mu.Lock()
+			if offset := rf.log[0].EntryIndex; i > offset {
+				rf.applyCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[i-offset].Command,
+					CommandIndex: rf.log[i-offset].EntryIndex,
+				}
+				rf.lastApplied = i
+			} else {
+				i = offset
 			}
-			rf.lastApplied = i
+			rf.mu.Unlock()
 			DPrintf("server %d applies Entries %d\n", rf.me, i)
 		}
-		// }
 	}
 }
