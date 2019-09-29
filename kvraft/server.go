@@ -64,7 +64,7 @@ func (kv *KVServer) isDone(clientID int64, serialID uint) bool {
 func (kv *KVServer) startAgreement(command Op) bool {
 	index, _, isLeader := kv.rf.Start(command)
 	if isLeader {
-		DPrintf("server %d started agreement on %d\n", kv.me, index)
+		// DPrintf("server %d started agreement on %d\n", kv.me, index)
 		kv.mu.Lock()
 		if _, ok := kv.entryAppliedChs[index]; !ok {
 			kv.entryAppliedChs[index] = make(chan DoneMsg, 1)
@@ -150,10 +150,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if succeed {
 		reply.Err = OK
-		DPrintf("server %d replied: succeed: %v, WrongLeader: %v\n", kv.me, succeed, reply.WrongLeader)
+		// DPrintf("server %d replied: succeed: %v, WrongLeader: %v\n", kv.me, succeed, reply.WrongLeader)
 		return
 	}
-	DPrintf("server %d replied: succeed: %v, Wrongleader: %v\n", kv.me, succeed, reply.WrongLeader)
+	// DPrintf("server %d replied: succeed: %v, Wrongleader: %v\n", kv.me, succeed, reply.WrongLeader)
 	reply.Err = ErrOpFail
 	if ID := kv.rf.GetLeaderID(); ID != -1 {
 		reply.LeaderID = ID
@@ -197,16 +197,15 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
 	kv.kvMap = make(map[string]string)
 	kv.lastClerkSerialID = make(map[int64]uint)
 	kv.entryAppliedChs = make(map[int]chan DoneMsg)
 
+	kv.applyCh = make(chan raft.ApplyMsg)
+
 	go kv.startApplyMsgDaemon()
+
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	return kv
 }
@@ -221,9 +220,10 @@ func (kv *KVServer) startApplyMsgDaemon() {
 	for {
 		msg := <-kv.applyCh
 		if msg.CommandValid {
-			DPrintf("server %d, Command: %v, Index: %d\n", kv.me, msg.Command, msg.CommandIndex)
 			command := msg.Command.(Op)
+			DPrintf("server %d tried to get the Lock to 'Command'\n", kv.me)
 			kv.mu.Lock()
+			DPrintf("server %d got the Lock to 'Command'\n", kv.me)
 			if command.SerialID > kv.lastClerkSerialID[command.ClientID] {
 				switch command.Type {
 				case "Put":
@@ -235,7 +235,7 @@ func (kv *KVServer) startApplyMsgDaemon() {
 				// DPrintf("server %d updated SerialID of Client %d to %d\n", kv.me, command.ClientID, command.SerialID)
 			}
 			index := msg.CommandIndex
-			DPrintf("Server %d applied entry %d\n", kv.me, index)
+			DPrintf("server %d applied Command: %v, Index: %d\n", kv.me, msg.Command, index)
 			if ch, ok := kv.entryAppliedChs[index]; ok {
 				select {
 				case <-ch:
@@ -262,7 +262,9 @@ func (kv *KVServer) startApplyMsgDaemon() {
 		} else {
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
+			DPrintf("server %d tried to get the Lock to 'Snapshot'\n", kv.me)
 			kv.mu.Lock()
+			DPrintf("server %d got the Lock to 'Snapshot'\n", kv.me)
 			kv.kvMap = make(map[string]string)
 			kv.lastClerkSerialID = make(map[int64]uint)
 			d.Decode(&kv.kvMap)
