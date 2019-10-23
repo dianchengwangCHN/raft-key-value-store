@@ -28,14 +28,51 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+// Copy returns a new copy of a given Config
+func (config Config) Copy() Config {
+	newConfig := Config{
+		Num:    config.Num,
+		Shards: config.Shards,
+		Groups: copyConfigGroups(config.Groups),
+	}
+	return newConfig
+}
+
+func copyConfigGroups(groups map[int][]string) map[int][]string {
+	newGroups := make(map[int][]string)
+	for gid, servers := range groups {
+		serversCopy := make([]string, len(servers))
+		copy(serversCopy, servers)
+		newGroups[gid] = serversCopy
+	}
+	return newGroups
+}
+
+// ClientInfo defines the client information needed to be included in arguments
+type ClientInfo struct {
+	ClientID int64
+	SerialID uint
+}
+
+type ClerkRPCArgs interface {
+	GetClerkInfo() ClientInfo
+}
+
 const (
-	OK = "OK"
+	OK   = "OK"
+	FAIL = "FAIL"
 )
 
 type Err string
 
+// JoinArgs defines the arguments used for Jion RPC
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers   map[int][]string // new GID -> servers mappings
+	ClerkInfo ClientInfo
+}
+
+func (args *JoinArgs) GetClerkInfo() ClientInfo {
+	return args.ClerkInfo
 }
 
 type JoinReply struct {
@@ -44,7 +81,12 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs      []int
+	ClerkInfo ClientInfo
+}
+
+func (args *LeaveArgs) GetClerkInfo() ClientInfo {
+	return args.ClerkInfo
 }
 
 type LeaveReply struct {
@@ -53,8 +95,13 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard     int
+	GID       int
+	ClerkInfo ClientInfo
+}
+
+func (args *MoveArgs) GetClerkInfo() ClientInfo {
+	return args.ClerkInfo
 }
 
 type MoveReply struct {
@@ -63,7 +110,12 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num       int // desired config number
+	ClerkInfo ClientInfo
+}
+
+func (args *QueryArgs) GetClerkInfo() ClientInfo {
+	return args.ClerkInfo
 }
 
 type QueryReply struct {
