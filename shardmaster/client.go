@@ -50,15 +50,15 @@ func (ck *Clerk) Query(num int) Config {
 	ck.opSerialID++
 	for {
 		// try each known server.
-		var reply QueryReply
+		reply := QueryReply{
+			WrongLeader: true,
+		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Query", args, &reply)
-		if ok {
-			if !reply.WrongLeader && reply.Err == OK {
-				return reply.Config
-			}
-			if reply.WrongLeader {
-				ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-			}
+		if ok && reply.Err == OK {
+			return reply.Config
+		}
+		if reply.WrongLeader {
+			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
 		}
 		time.Sleep(retryInterval * time.Millisecond)
 	}
@@ -75,15 +75,15 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	ck.opSerialID++
 	for {
 		// try each known server.
-		var reply JoinReply
+		reply := JoinReply{
+			WrongLeader: true,
+		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Join", args, &reply)
-		if ok {
-			if !reply.WrongLeader && reply.Err == OK {
-				return
-			}
-			if reply.WrongLeader {
-				ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-			}
+		if ok && reply.Err == OK {
+			return
+		}
+		if reply.WrongLeader {
+			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
 		}
 		time.Sleep(retryInterval * time.Millisecond)
 	}
@@ -100,15 +100,15 @@ func (ck *Clerk) Leave(gids []int) {
 	ck.opSerialID++
 	for {
 		// try each known server.
-		var reply LeaveReply
+		reply := LeaveReply{
+			WrongLeader: true,
+		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Leave", args, &reply)
-		if ok {
-			if !reply.WrongLeader && reply.Err == OK {
-				return
-			}
-			if reply.WrongLeader {
-				ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-			}
+		if ok && reply.Err == OK {
+			return
+		}
+		if reply.WrongLeader {
+			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
 		}
 		time.Sleep(retryInterval * time.Millisecond)
 	}
@@ -126,15 +126,15 @@ func (ck *Clerk) Move(shard int, gid int) {
 	ck.opSerialID++
 	for {
 		// try each known server.
-		var reply MoveReply
+		reply := MoveReply{
+			WrongLeader: true,
+		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Move", args, &reply)
-		if ok {
-			if !reply.WrongLeader && reply.Err == OK {
-				return
-			}
-			if reply.WrongLeader {
-				ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-			}
+		if ok && reply.Err == OK {
+			return
+		}
+		if reply.WrongLeader {
+			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
 		}
 		time.Sleep(retryInterval * time.Millisecond)
 	}

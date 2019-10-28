@@ -1,16 +1,25 @@
 package shardmaster
 
 import (
+	"log"
 	"sync"
 	"time"
 
+	"github.com/dianchengwangCHN/raft-key-value-store/labgob"
 	"github.com/dianchengwangCHN/raft-key-value-store/labrpc"
 	"github.com/dianchengwangCHN/raft-key-value-store/raft"
 )
 
-const (
-	agreementTimeoutInterval time.Duration = 1000
-)
+const debug = 1
+
+func dPrintf(format string, a ...interface{}) (n int, err error) {
+	if debug > 0 {
+		log.Printf(format, a...)
+	}
+	return
+}
+
+const agreementTimeoutInterval time.Duration = 1000
 
 type doneMsg struct {
 	ClientID int64
@@ -34,7 +43,7 @@ type ShardMaster struct {
 func (sm *ShardMaster) isDone(clerkInfo ClientInfo) bool {
 	sm.mu.Lock()
 	v, ok := sm.lastClerkSerialID[clerkInfo.ClientID]
-	sm.mu.Lock()
+	sm.mu.Unlock()
 	if ok {
 		return v >= clerkInfo.SerialID
 	}
@@ -89,10 +98,12 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
+	sm.mu.Lock()
 	lastConfigIndex := sm.configs[len(sm.configs)-1].Num
+	sm.mu.Unlock()
 
 	if args.Num >= 0 && args.Num <= lastConfigIndex {
-		reply.Config = sm.configs[lastConfigIndex].Copy()
+		reply.Config = sm.configs[args.Num].Copy()
 		reply.WrongLeader, reply.Err = false, OK
 		return
 	}
@@ -101,9 +112,6 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	reply.WrongLeader, reply.Err = wrongLeader, err
 	if wrongLeader || err != OK {
 		return
-	}
-	if index == -1 {
-		index = sm.configs[len(sm.configs)-1].Num
 	}
 	reply.Config = sm.configs[index].Copy()
 }
@@ -138,11 +146,20 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm.configs[0].Groups = map[int][]string{}
 
 	sm.applyCh = make(chan raft.ApplyMsg)
-	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
 	// Your code here.
+	labgob.Register(JoinArgs{})
+	labgob.Register(LeaveArgs{})
+	labgob.Register(MoveArgs{})
+	labgob.Register(QueryArgs{})
+
 	sm.lastClerkSerialID = make(map[int64]uint)
 	sm.entryAppliedChs = make(map[int]chan doneMsg)
+
+	go sm.startApplyMsgDaemon()
+
+	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
+
 	return sm
 }
 
@@ -163,28 +180,33 @@ func (sm *ShardMaster) startApplyMsgDaemon() {
 			sm.mu.Lock()
 			newConfig := sm.configs[len(sm.configs)-1].Copy()
 			switch command := msg.Command.(type) {
-			case JoinArgs:
+			case *JoinArgs:
 				for gid, servers := range command.Servers {
 					newConfig.Groups[gid] = append(newConfig.Groups[gid], servers...)
 				}
-				sm.reassignShards(&newConfig.Shards, len(newConfig.Groups))
-			case LeaveArgs:
+				sm.reassignShards(&newConfig.Shards, newConfig.Groups)
+				// dPrintf("server %d finished Join operation, now having %d groups\n", sm.me, len(newConfig.Groups))
+			case *LeaveArgs:
 				for _, gid := range command.GIDs {
 					delete(newConfig.Groups, gid)
 				}
-				sm.reassignShards(&newConfig.Shards, len(newConfig.Groups))
-			case MoveArgs:
+				sm.reassignShards(&newConfig.Shards, newConfig.Groups)
+				// dPrintf("server %d finished Leave operation, now having %d groups\n", sm.me, len(newConfig.Groups))
+			case *MoveArgs:
 				newConfig.Shards[command.Shard] = command.GID
-			case QueryArgs:
+			case *QueryArgs:
 				if command.Num < 0 || command.Num > sm.configs[len(sm.configs)-1].Num {
 					doneMsg.Num = sm.configs[len(sm.configs)-1].Num
 				} else {
 					doneMsg.Num = command.Num
 				}
+				dPrintf("server %d finished Query operation, return index: %d\n", sm.me, doneMsg.Num)
 			}
-
-			newConfig.Num++
-			sm.configs = append(sm.configs, newConfig)
+			if _, ok := msg.Command.(*QueryArgs); !ok {
+				newConfig.Num++
+				sm.configs = append(sm.configs, newConfig)
+				dPrintf("server %d now has %d configs, last config Num: %d\n", sm.me, len(sm.configs), newConfig.Num)
+			}
 			if clientInfo.SerialID > sm.lastClerkSerialID[clientInfo.ClientID] {
 				sm.lastClerkSerialID[clientInfo.ClientID] = clientInfo.SerialID
 			}
@@ -200,28 +222,35 @@ func (sm *ShardMaster) startApplyMsgDaemon() {
 	}
 }
 
-func (sm *ShardMaster) reassignShards(shards *[NShards]int, size int) {
+func (sm *ShardMaster) reassignShards(shards *[NShards]int, groups map[int][]string) {
+	size := len(groups)
 	if size == 0 {
-		for i, _ := range shards {
+		for i := range shards {
 			shards[i] = 0
 		}
 		return
 	}
 	num, remainder := NShards/size, NShards%size
 	counts := make(map[int]int) // gid -> count of shards
+	for k := range groups {
+		counts[k] = 0
+	}
 	unassigned := []int{}
 	for i, gid := range shards {
-		if counts[gid] < num {
+		if gid == 0 {
+			unassigned = append(unassigned, i)
+		} else if _, ok := counts[gid]; !ok {
+			unassigned = append(unassigned, i)
+		} else if counts[gid] < num {
 			counts[gid]++
 		} else if counts[gid] == num && remainder > 0 {
 			counts[gid]++
 			remainder--
 		} else {
-			shards[i] = 0
 			unassigned = append(unassigned, i)
 		}
 	}
-
+	// dPrintf("server %d now has %d unassinged shards\n", sm.me, len(unassigned))
 	index := 0
 	for gid, count := range counts {
 		for count < num {
@@ -231,6 +260,7 @@ func (sm *ShardMaster) reassignShards(shards *[NShards]int, size int) {
 		}
 		if remainder > 0 {
 			shards[unassigned[index]] = gid
+			remainder--
 			count++
 			index++
 		}

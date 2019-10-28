@@ -20,8 +20,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-// AGREEMENTTIMEOUTInterval is the timeout interval for reaching agreement to append a log entry
-const AGREEMENTTIMEOUTInterval time.Duration = 1000
+// agreementTimeoutInterval is the timeout interval for reaching agreement to append a log entry
+const agreementTimeoutInterval time.Duration = 1000
 
 // OpType defines the type of each command that is logged
 type OpType string
@@ -33,6 +33,12 @@ type Op struct {
 	Type     OpType
 	Key      string
 	Value    string
+	ClientID int64
+	SerialID uint
+}
+
+// DoneMsg models the message passed to doneCh
+type DoneMsg struct {
 	ClientID int64
 	SerialID uint
 }
@@ -72,7 +78,7 @@ func (kv *KVServer) startAgreement(command Op) bool {
 		doneCh := kv.entryAppliedChs[index]
 		kv.mu.Unlock()
 		select {
-		case <-time.After(AGREEMENTTIMEOUTInterval * time.Millisecond):
+		case <-time.After(agreementTimeoutInterval * time.Millisecond):
 			// DPrintf("server %d agreement on %d timeout\n", kv.me, index)
 		case msg := <-doneCh:
 			if msg.ClientID == command.ClientID && msg.SerialID == command.SerialID {
@@ -83,6 +89,7 @@ func (kv *KVServer) startAgreement(command Op) bool {
 				// DPrintf("server %d update lastSerialID to %d for client %d\n", kv.me, msg.SerialID, msg.ClientID)
 				return true
 			}
+			doneCh <- msg
 		}
 	}
 	return false
@@ -193,27 +200,19 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv := new(KVServer)
 	kv.me = me
-	// kv.maxraftstate = maxraftstate
 	kv.maxraftstate = maxraftstate
+	kv.applyCh = make(chan raft.ApplyMsg)
 
 	// You may need initialization code here.
 	kv.kvMap = make(map[string]string)
 	kv.lastClerkSerialID = make(map[int64]uint)
 	kv.entryAppliedChs = make(map[int]chan DoneMsg)
 
-	kv.applyCh = make(chan raft.ApplyMsg)
-
 	go kv.startApplyMsgDaemon()
 
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	return kv
-}
-
-// DoneMsg models the message passed to doneCh
-type DoneMsg struct {
-	ClientID int64
-	SerialID uint
 }
 
 func (kv *KVServer) startApplyMsgDaemon() {
@@ -241,12 +240,10 @@ func (kv *KVServer) startApplyMsgDaemon() {
 				case <-ch:
 				default:
 				}
-				kv.entryAppliedChs[index] <- DoneMsg{
+				ch <- DoneMsg{
 					ClientID: command.ClientID,
 					SerialID: command.SerialID,
 				}
-			} else {
-				ch = make(chan DoneMsg, 1)
 			}
 
 			// check if need log compaction

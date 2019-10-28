@@ -24,7 +24,7 @@ func randstring(n int) string {
 }
 
 // Randomize server handles
-func random_handles(kvh []*labrpc.ClientEnd) []*labrpc.ClientEnd {
+func randomHandles(kvh []*labrpc.ClientEnd) []*labrpc.ClientEnd {
 	sa := make([]*labrpc.ClientEnd, len(kvh))
 	copy(sa, kvh)
 	for i := range sa {
@@ -43,8 +43,8 @@ type config struct {
 	saved        []*raft.Persister
 	endnames     [][]string // names of each server's sending ClientEnds
 	clerks       map[*Clerk][]string
-	nextClientId int
-	start        time.Time // time at which make_config() was called
+	nextClientID int
+	start        time.Time // time at which makeConfig() was called
 }
 
 func (cfg *config) checkTimeout() {
@@ -177,9 +177,9 @@ func (cfg *config) makeClient(to []int) *Clerk {
 		cfg.net.Connect(endnames[j], j)
 	}
 
-	ck := MakeClerk(random_handles(ends))
+	ck := MakeClerk(randomHandles(ends))
 	cfg.clerks[ck] = endnames
-	cfg.nextClientId++
+	cfg.nextClientID++
 	cfg.ConnectClientUnlocked(ck, to)
 	return ck
 }
@@ -304,8 +304,8 @@ func (cfg *config) Leader() (bool, int) {
 	defer cfg.mu.Unlock()
 
 	for i := 0; i < cfg.n; i++ {
-		_, is_leader := cfg.servers[i].rf.GetState()
-		if is_leader {
+		_, isLeader := cfg.servers[i].rf.GetState()
+		if isLeader {
 			return true, i
 		}
 	}
@@ -313,7 +313,7 @@ func (cfg *config) Leader() (bool, int) {
 }
 
 // Partition servers into 2 groups and put current leader in minority
-func (cfg *config) make_partition() ([]int, []int) {
+func (cfg *config) makePartition() ([]int, []int) {
 	_, l := cfg.Leader()
 	p1 := make([]int, cfg.n/2+1)
 	p2 := make([]int, cfg.n/2)
@@ -332,7 +332,7 @@ func (cfg *config) make_partition() ([]int, []int) {
 	return p1, p2
 }
 
-func make_config(t *testing.T, n int, unreliable bool) *config {
+func makeConfig(t *testing.T, n int, unreliable bool) *config {
 	runtime.GOMAXPROCS(4)
 	cfg := &config{}
 	cfg.t = t
@@ -342,7 +342,7 @@ func make_config(t *testing.T, n int, unreliable bool) *config {
 	cfg.saved = make([]*raft.Persister, cfg.n)
 	cfg.endnames = make([][]string, cfg.n)
 	cfg.clerks = make(map[*Clerk][]string)
-	cfg.nextClientId = cfg.n + 1000 // client ids start 1000 above the highest serverid
+	cfg.nextClientID = cfg.n + 1000 // client ids start 1000 above the highest serverid
 	cfg.start = time.Now()
 
 	// create a full set of KV servers.
