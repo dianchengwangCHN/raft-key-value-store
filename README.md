@@ -110,3 +110,40 @@ Test: unreliable net, restarts, partitions, snapshots, many clients, linearizabi
 PASS
 ok  	github.com/dianchengwangCHN/raft-key-value-store/kvraft	377.669s
 ```
+
+## Lab 4: Sharded Key-Value Service
+
+- [x] Shard Master
+- [ ] Sharded Key-Value Server
+
+Shard Master plays the role of processing the configuration update. Specifically, it assigns the paritions to different server groups as evenly as possible. It aslo dynamically change the assignment according to the change on the number of server groups.
+
+**Note**: In Lab 4A, when we pass the commands to Raft, we should not pass the pointers.
+
+Passed test cases of Lab 4A:
+
+```
+Test: Basic leave/join ...
+labgob warning: Decoding into a non-default variable/field ConflictIndex may not work
+  ... Passed
+Test: Historical queries ...
+  ... Passed
+Test: Move ...
+  ... Passed
+Test: Concurrent leave/join ...
+  ... Passed
+Test: Minimal transfers after joins ...
+  ... Passed
+Test: Minimal transfers after leaves ...
+  ... Passed
+Test: Multi-group join/leave ...
+  ... Passed
+Test: Concurrent multi leave/join ...
+  ... Passed
+Test: Minimal transfers after multijoins ...
+  ... Passed
+Test: Minimal transfers after multileaves ...
+  ... Passed
+PASS
+ok  	github.com/dianchengwangCHN/raft-key-value-store/shardmaster	1.965s
+```

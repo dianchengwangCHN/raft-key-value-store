@@ -71,8 +71,15 @@ type JoinArgs struct {
 	ClerkInfo ClientInfo
 }
 
-func (args *JoinArgs) GetClerkInfo() ClientInfo {
+func (args JoinArgs) GetClerkInfo() ClientInfo {
 	return args.ClerkInfo
+}
+
+func (args *JoinArgs) copy() JoinArgs {
+	return JoinArgs{
+		Servers:   copyConfigGroups(args.Servers),
+		ClerkInfo: args.ClerkInfo,
+	}
 }
 
 type JoinReply struct {
@@ -85,8 +92,15 @@ type LeaveArgs struct {
 	ClerkInfo ClientInfo
 }
 
-func (args *LeaveArgs) GetClerkInfo() ClientInfo {
+func (args LeaveArgs) GetClerkInfo() ClientInfo {
 	return args.ClerkInfo
+}
+
+func (args *LeaveArgs) copy() LeaveArgs {
+	return LeaveArgs{
+		GIDs:      append([]int{}, args.GIDs...),
+		ClerkInfo: args.ClerkInfo,
+	}
 }
 
 type LeaveReply struct {
@@ -100,8 +114,16 @@ type MoveArgs struct {
 	ClerkInfo ClientInfo
 }
 
-func (args *MoveArgs) GetClerkInfo() ClientInfo {
+func (args MoveArgs) GetClerkInfo() ClientInfo {
 	return args.ClerkInfo
+}
+
+func (args *MoveArgs) copy() MoveArgs {
+	return MoveArgs{
+		Shard:     args.Shard,
+		GID:       args.GID,
+		ClerkInfo: args.ClerkInfo,
+	}
 }
 
 type MoveReply struct {
@@ -114,8 +136,15 @@ type QueryArgs struct {
 	ClerkInfo ClientInfo
 }
 
-func (args *QueryArgs) GetClerkInfo() ClientInfo {
+func (args QueryArgs) GetClerkInfo() ClientInfo {
 	return args.ClerkInfo
+}
+
+func (args *QueryArgs) copy() QueryArgs {
+	return QueryArgs{
+		Num:       args.Num,
+		ClerkInfo: args.ClerkInfo,
+	}
 }
 
 type QueryReply struct {

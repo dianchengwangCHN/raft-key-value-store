@@ -51,15 +51,17 @@ func (ck *Clerk) Query(num int) Config {
 	for {
 		// try each known server.
 		reply := QueryReply{
-			WrongLeader: true,
+			// WrongLeader: true,
 		}
+		dPrintf("clerk sent Query to %d, Num %d\n", ck.leaderID, args.Num)
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Query", args, &reply)
+		dPrintf("clerk got reply from %d, ok: %v, reply WrongLeader: %v, Err: %v, Num %d\n", ck.leaderID, ok, reply.WrongLeader, reply.Err, reply.Config.Num)
 		if ok && reply.Err == OK {
 			return reply.Config
 		}
-		if reply.WrongLeader {
-			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-		}
+		// if reply.WrongLeader {
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		// }
 		time.Sleep(retryInterval * time.Millisecond)
 	}
 }
@@ -76,15 +78,15 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	for {
 		// try each known server.
 		reply := JoinReply{
-			WrongLeader: true,
+			// WrongLeader: true,
 		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Join", args, &reply)
 		if ok && reply.Err == OK {
 			return
 		}
-		if reply.WrongLeader {
-			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-		}
+		// if reply.WrongLeader {
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		// }
 		time.Sleep(retryInterval * time.Millisecond)
 	}
 }
@@ -101,15 +103,15 @@ func (ck *Clerk) Leave(gids []int) {
 	for {
 		// try each known server.
 		reply := LeaveReply{
-			WrongLeader: true,
+			// WrongLeader: true,
 		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Leave", args, &reply)
 		if ok && reply.Err == OK {
 			return
 		}
-		if reply.WrongLeader {
-			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-		}
+		// if reply.WrongLeader {
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		// }
 		time.Sleep(retryInterval * time.Millisecond)
 	}
 }
@@ -127,15 +129,15 @@ func (ck *Clerk) Move(shard int, gid int) {
 	for {
 		// try each known server.
 		reply := MoveReply{
-			WrongLeader: true,
+			// WrongLeader: true,
 		}
 		ok := ck.servers[ck.leaderID].Call("ShardMaster.Move", args, &reply)
 		if ok && reply.Err == OK {
 			return
 		}
-		if reply.WrongLeader {
-			ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
-		}
+		// if reply.WrongLeader {
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		// }
 		time.Sleep(retryInterval * time.Millisecond)
 	}
 }
