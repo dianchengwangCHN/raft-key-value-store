@@ -55,60 +55,63 @@ ok  	github.com/dianchengwangCHN/raft-key-value-store/raft	181.813s
 - [x] Client Interface
 - [x] Log Compaction
 
-**Note**: A tricky problem in Lab 3 is directly `append()` a part of old log to the new log will not eliminate the reference to the underlying array of old log. Thus, be careful to copy the part of the old slice first and then `append()` it to the new slice.
+**Note**:
+
+- A tricky problem in Lab 3 is directly `append()` a part of old log to the new log will not eliminate the reference to the underlying array of old log. Thus, be careful to copy the part of the old slice first and then `append()` it to the new slice.
+- When performing `InstallSnapshot`, be sure to check whether should apply snapshot to server. When server state is ahead of snapshot state, applying snapshot will roll back server state, such that will lead to inconsistency.
 
 Passed all test cases of Lab 3. Test result is shown as below:
 
 ```
 Test: one client (3A) ...
 labgob warning: Decoding into a non-default variable/field LeaderID may not work
-  ... Passed --  15.0  5 20459 2608
+  ... Passed --  15.1  5 18277 2317
 Test: many clients (3A) ...
-  ... Passed --  15.2  5 27785 2866
+  ... Passed --  15.3  5 12648 2456
 Test: unreliable net, many clients (3A) ...
-  ... Passed --  16.4  5 12629 1759
+  ... Passed --  15.8  5 12009 1625
 Test: concurrent append to same key, unreliable (3A) ...
-  ... Passed --   0.5  3   227   52
+  ... Passed --   1.2  3   277   52
 Test: progress in majority (3A) ...
-  ... Passed --   0.7  5    73    2
+  ... Passed --   0.5  5    61    2
 Test: no progress in minority (3A) ...
-  ... Passed --   1.0  5   247    3
+  ... Passed --   1.0  5   268    3
 Test: completion after heal (3A) ...
-  ... Passed --   1.0  5    64    3
+  ... Passed --   1.0  5    58    3
 Test: partitions, one client (3A) ...
-  ... Passed --  22.6  5 52561 2252
+  ... Passed --  22.8  5 52918 2158
 Test: partitions, many clients (3A) ...
-  ... Passed --  22.7  5 105574 2377
+  ... Passed --  22.8  5 112397 2293
 Test: restarts, one client (3A) ...
-  ... Passed --  19.7  5 42283 2945
+  ... Passed --  19.8  5 26400 2512
 Test: restarts, many clients (3A) ...
-  ... Passed --  20.1  5 57274 2886
+  ... Passed --  20.0  5 45776 2862
 Test: unreliable net, restarts, many clients (3A) ...
-  ... Passed --  21.8  5 13920 1627
+  ... Passed --  20.3  5 13392 1665
 Test: restarts, partitions, many clients (3A) ...
-  ... Passed --  27.2  5 97144 2511
+  ... Passed --  26.8  5 87722 2355
 Test: unreliable net, restarts, partitions, many clients (3A) ...
-  ... Passed --  28.2  5 21945 1018
+  ... Passed --  27.7  5 28405 1236
 Test: unreliable net, restarts, partitions, many clients, linearizability checks (3A) ...
-  ... Passed --  25.9  7 53822 1547
+  ... Passed --  25.8  7 42744 1180
 Test: InstallSnapshot RPC (3B) ...
-  ... Passed --   5.1  3 18556   63
+  ... Passed --   4.5  3  6012   63
 Test: snapshot size is reasonable (3B) ...
-  ... Passed --   0.4  3  2784  800
+  ... Passed --   0.3  3  2396  800
 Test: restarts, snapshots, one client (3B) ...
-  ... Passed --  20.0  5 193637 24113
+  ... Passed --  20.1  5 158888 27146
 Test: restarts, snapshots, many clients (3B) ...
-  ... Passed --  19.8  5 182312 22930
+  ... Passed --  21.3  5 182495 26132
 Test: unreliable net, snapshots, many clients (3B) ...
-  ... Passed --  16.2  5 11963 1262
+  ... Passed --  15.6  5 13239 1778
 Test: unreliable net, restarts, snapshots, many clients (3B) ...
-  ... Passed --  23.3  5 15475 1432
+  ... Passed --  20.5  5 15269 1843
 Test: unreliable net, restarts, partitions, snapshots, many clients (3B) ...
-  ... Passed --  28.4  5  9661  344
+  ... Passed --  27.9  5 23393 1040
 Test: unreliable net, restarts, partitions, snapshots, many clients, linearizability checks (3B) ...
-  ... Passed --  25.8  7 32655  572
+  ... Passed --  25.9  7 65346 1833
 PASS
-ok  	github.com/dianchengwangCHN/raft-key-value-store/kvraft	377.669s
+ok  	github.com/dianchengwangCHN/raft-key-value-store/kvraft	372.602s
 ```
 
 ## Lab 4: Sharded Key-Value Service
